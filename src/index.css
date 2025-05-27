@@ -1,0 +1,142 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 14% 10%;
+    --foreground: 213 31% 91%;
+
+    --card: 220 14% 12%;
+    --card-foreground: 213 31% 91%;
+
+    --popover: 220 14% 10%;
+    --popover-foreground: 213 31% 91%;
+
+    --primary: 220 14% 10%;
+    --primary-foreground: 213 31% 91%;
+
+    --secondary: 220 14% 16%;
+    --secondary-foreground: 213 31% 91%;
+
+    --muted: 220 14% 16%;
+    --muted-foreground: 215 16% 65%;
+
+    --accent: 186 100% 67%;
+    --accent-foreground: 222 47% 11%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 213 31% 91%;
+
+    --border: 220 13% 28%;
+    --input: 220 13% 28%;
+    --ring: 224 71% 58%;
+
+    --radius: 0.5rem;
+    
+    --glow-accent: 0 0 10px hsla(186, 100%, 67%, 0.5), 0 0 20px hsla(186, 100%, 67%, 0.3);
+    --glow-accent-strong: 0 0 15px hsla(186, 100%, 67%, 0.7), 0 0 30px hsla(186, 100%, 67%, 0.5);
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    background-image: radial-gradient(circle at 50% 50%, hsla(220, 14%, 14%, 1) 0%, hsla(220, 14%, 8%, 1) 100%);
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors
+    focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none
+    disabled:opacity-50 h-9 px-4 py-2;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-primary-foreground shadow hover:bg-primary/90;
+  }
+
+  .btn-secondary {
+    @apply bg-secondary text-secondary-foreground hover:bg-secondary/80;
+  }
+
+  .btn-accent {
+    @apply bg-accent text-accent-foreground shadow hover:bg-accent/90;
+    box-shadow: var(--glow-accent);
+  }
+
+  .btn-destructive {
+    @apply bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90;
+  }
+
+  .btn-outline {
+    @apply border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground;
+  }
+
+  .btn-ghost {
+    @apply hover:bg-accent hover:text-accent-foreground;
+  }
+
+  .btn-link {
+    @apply text-primary underline-offset-4 hover:underline;
+  }
+
+  .input {
+    @apply flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm
+    transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium
+    placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1
+    focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .input:focus {
+    box-shadow: var(--glow-accent);
+  }
+
+  .card {
+    @apply rounded-lg border bg-card text-card-foreground;
+    background-color: rgba(25, 26, 32, 0.95);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(8px);
+    border-color: rgba(40, 42, 50, 0.8);
+  }
+
+  .card-header {
+    @apply flex flex-col space-y-1.5 p-6;
+    border-bottom: 1px solid hsl(var(--border) / 0.5);
+  }
+
+  .card-title {
+    @apply font-semibold leading-none tracking-tight;
+  }
+
+  .card-description {
+    @apply text-sm text-muted-foreground;
+  }
+
+  .card-content {
+    @apply p-6 pt-0;
+  }
+
+  .card-footer {
+    @apply flex items-center p-6 pt-0;
+  }
+  
+  /* Glowing accent elements */
+  .text-accent {
+    text-shadow: 0 0 10px hsla(186, 100%, 67%, 0.8), 0 0 20px hsla(186, 100%, 67%, 0.4);
+    color: hsl(186, 100%, 75%);
+  }
+  
+  .bg-accent {
+    box-shadow: var(--glow-accent-strong);
+  }
+  
+  .border-accent {
+    box-shadow: var(--glow-accent-strong);
+    border-color: hsl(186, 100%, 75%) !important;
+  }
+}

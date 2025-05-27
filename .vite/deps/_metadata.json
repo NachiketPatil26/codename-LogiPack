@@ -1,0 +1,85 @@
+{
+  "hash": "0644290f",
+  "configHash": "74021c62",
+  "lockfileHash": "23deb104",
+  "browserHash": "f3830bee",
+  "optimized": {
+    "react": {
+      "src": "../../node_modules/react/index.js",
+      "file": "react.js",
+      "fileHash": "3af26679",
+      "needsInterop": true
+    },
+    "react-dom/client": {
+      "src": "../../node_modules/react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "e0ff2295",
+      "needsInterop": true
+    },
+    "lucide-react": {
+      "src": "../../node_modules/lucide-react/dist/esm/lucide-react.js",
+      "file": "lucide-react.js",
+      "fileHash": "4ae56e08",
+      "needsInterop": false
+    },
+    "@react-three/fiber": {
+      "src": "../../node_modules/@react-three/fiber/dist/react-three-fiber.esm.js",
+      "file": "@react-three_fiber.js",
+      "fileHash": "4fb8c0fb",
+      "needsInterop": false
+    },
+    "@react-three/drei": {
+      "src": "../../node_modules/@react-three/drei/index.js",
+      "file": "@react-three_drei.js",
+      "fileHash": "9bf2028b",
+      "needsInterop": false
+    },
+    "react-hook-form": {
+      "src": "../../node_modules/react-hook-form/dist/index.esm.mjs",
+      "file": "react-hook-form.js",
+      "fileHash": "8c6894b0",
+      "needsInterop": false
+    },
+    "jspdf": {
+      "src": "../../node_modules/jspdf/dist/jspdf.es.min.js",
+      "file": "jspdf.js",
+      "fileHash": "e9b93aa2",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "vision_bundle-3QUMERFG": {
+      "file": "vision_bundle-3QUMERFG.js"
+    },
+    "html2canvas.esm-6PCMBVIK": {
+      "file": "html2canvas__esm-6PCMBVIK.js"
+    },
+    "purify.es-KRPFH7Z6": {
+      "file": "purify__es-KRPFH7Z6.js"
+    },
+    "index.es-AFZTMIM5": {
+      "file": "index__es-AFZTMIM5.js"
+    },
+    "chunk-563FDNKK": {
+      "file": "chunk-563FDNKK.js"
+    },
+    "chunk-K4JO3WOW": {
+      "file": "chunk-K4JO3WOW.js"
+    },
+    "chunk-32E4H3EV": {
+      "file": "chunk-32E4H3EV.js"
+    },
+    "chunk-SITVF2AJ": {
+      "file": "chunk-SITVF2AJ.js"
+    },
+    "hls-QFIIZCUB": {
+      "file": "hls-QFIIZCUB.js"
+    },
+    "chunk-IOPKX3SS": {
+      "file": "chunk-IOPKX3SS.js"
+    },
+    "chunk-G3PMV62Z": {
+      "file": "chunk-G3PMV62Z.js"
+    }
+  }
+}
