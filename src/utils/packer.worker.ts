@@ -565,7 +565,7 @@ self.onmessage = (event) => {
   console.log('Worker received message:', event.data);
   
   try {
-    const { items, container, isSecondContainer } = event.data;
+    const { items, container } = event.data;
     
     if (!items || !container) {
       throw new Error('Missing required data: items or container');
@@ -609,15 +609,10 @@ self.onmessage = (event) => {
     console.log('Worker completed packing algorithm with result:', {
       packedItems: result.packedItems.length,
       unpackedItems: result.unpackedItems.length,
-      fillPercentage: result.containerFillPercentage.toFixed(2) + '%',
-      isSecondContainer: isSecondContainer || false
+      fillPercentage: result.containerFillPercentage.toFixed(2) + '%'
     });
     
-    // Include the isSecondContainer flag in the response if it was provided
-    self.postMessage({
-      ...result,
-      isSecondContainer: isSecondContainer || false
-    });
+    self.postMessage(result);
   } catch (error: unknown) {
     console.error('Worker encountered an error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
