@@ -165,6 +165,23 @@ const ExportPanel: React.FC<ExportPanelProps> = ({
     pdf.save(`container-load-plan-${new Date().toISOString().slice(0, 10)}.pdf`);
   };
   
+  // Ensure we have valid data before rendering
+  if (!packedResult || !container || !cargoItems) {
+    return (
+      <div className="bg-card rounded-lg border p-6 shadow-sm">
+        <div className="flex flex-col gap-6">
+          <h3 className="text-lg font-medium">Export Results</h3>
+          <p className="text-muted-foreground">No data available to export</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Safely get lengths with fallbacks
+  const packedItemsCount = packedResult.packedItems?.length || 0;
+  const unpackedItemsCount = packedResult.unpackedItems?.length || 0;
+  const totalItems = cargoItems?.length || 0;
+
   return (
     <div className="card">
       <div className="card-header">
@@ -211,37 +228,32 @@ const ExportPanel: React.FC<ExportPanelProps> = ({
             <div className="flex items-center gap-2 text-sm">
               <CheckCircle size={16} className="text-success" />
               <span className="text-muted-foreground">Container:</span>
-              <span className="font-medium">{container.name}</span>
+              <span className="font-medium">{container?.name || 'N/A'}</span>
             </div>
             
             <div className="flex items-center gap-2 text-sm">
               <CheckCircle size={16} className="text-success" />
               <span className="text-muted-foreground">Space utilization:</span>
-              <span className="font-medium">
-                {(packedResult?.containerFillPercentage || 0).toFixed(1)}%
-              </span>
+              <span className="font-medium">{packedResult.containerFillPercentage?.toFixed(1)}%</span>
             </div>
             
             <div className="flex items-center gap-2 text-sm">
               <CheckCircle size={16} className="text-success" />
               <span className="text-muted-foreground">Weight:</span>
-              <span className="font-medium">
-                {(packedResult?.totalWeight || 0).toFixed(1)} kg 
-                ({(packedResult?.weightCapacityPercentage || 0).toFixed(1)}% of capacity)
-              </span>
+              <span className="font-medium">{packedResult.totalWeight?.toFixed(1)} kg ({packedResult.weightCapacityPercentage?.toFixed(1)}% of capacity)</span>
             </div>
             
             <div className="flex items-center gap-2 text-sm">
               <CheckCircle size={16} className="text-success" />
               <span className="text-muted-foreground">Packed items:</span>
-              <span className="font-medium">{packedResult.packedItems.length} of {cargoItems.length}</span>
+              <span className="font-medium">{packedItemsCount} of {totalItems}</span>
             </div>
             
-            {packedResult.unpackedItems.length > 0 && (
+            {unpackedItemsCount > 0 && (
               <div className="flex items-center gap-2 text-sm">
                 <AlertCircle size={16} className="text-destructive" />
                 <span className="text-muted-foreground">Unpacked items:</span>
-                <span className="font-medium text-destructive">{packedResult.unpackedItems.length}</span>
+                <span className="font-medium text-destructive">{unpackedItemsCount}</span>
               </div>
             )}
           </div>

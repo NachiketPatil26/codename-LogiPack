@@ -128,13 +128,16 @@ const isPositionEmpty = (
 
   // First check if the item is strictly within container boundaries
   // No tolerance for boundary violations to ensure items stay inside
+  // Add a safety margin to prevent boundary violations
+  const BOUNDARY_MARGIN = 0.01; // 1cm safety margin
+  
   if (
-    position.x < 0 || endX > container.length ||
-    position.y < 0 || endY > container.height ||
-    position.z < 0 || endZ > container.width
+    position.x < 0 || endX > (container.length - BOUNDARY_MARGIN) ||
+    position.y < 0 || endY > (container.height - BOUNDARY_MARGIN) ||
+    position.z < 0 || endZ > (container.width - BOUNDARY_MARGIN)
   ) {
     // Log the violation for debugging
-    console.log('Boundary violation:', {
+    console.log('Boundary violation prevented:', {
       start: position,
       end: { x: endX, y: endY, z: endZ },
       containerDims: container
@@ -142,9 +145,7 @@ const isPositionEmpty = (
     return false;
   }
 
-  // Check collision with existing items using a small safety margin
-  // to prevent floating point errors causing overlaps
-  const SAFETY_MARGIN = 0.01; // 1cm safety margin
+  // Check collision with existing items to prevent overlaps
   
   for (const packedItem of packedItems) {
     // Get the actual dimensions based on the rotation of the packed item
@@ -188,19 +189,21 @@ const isPositionEmpty = (
     const itemEndY = packedItem.position.y + itemHeight;
     const itemEndZ = packedItem.position.z + itemWidth;
 
-    // Check for overlap in all three dimensions with safety margin
-    // Two boxes overlap if they overlap in all three dimensions
-    if (
-      // Check X-axis overlap (with safety margin)
-      position.x + SAFETY_MARGIN < itemEndX && 
-      endX - SAFETY_MARGIN > packedItem.position.x &&
-      // Check Y-axis overlap (with safety margin)
-      position.y + SAFETY_MARGIN < itemEndY && 
-      endY - SAFETY_MARGIN > packedItem.position.y &&
-      // Check Z-axis overlap (with safety margin)
-      position.z + SAFETY_MARGIN < itemEndZ && 
-      endZ - SAFETY_MARGIN > packedItem.position.z
-    ) {
+    // Calculate overlap in each dimension
+    const overlapX = Math.max(0, 
+      Math.min(endX, itemEndX) - Math.max(position.x, packedItem.position.x));
+    
+    const overlapY = Math.max(0, 
+      Math.min(endY, itemEndY) - Math.max(position.y, packedItem.position.y));
+    
+    const overlapZ = Math.max(0, 
+      Math.min(endZ, itemEndZ) - Math.max(position.z, packedItem.position.z));
+    
+    // Check for significant overlap in all three dimensions
+    // Using a slightly larger safety margin for more robust collision detection
+    const COLLISION_MARGIN = 0.02; // 2cm collision margin
+    
+    if (overlapX > COLLISION_MARGIN && overlapY > COLLISION_MARGIN && overlapZ > COLLISION_MARGIN) {
       // Log collision for debugging
       console.log('Collision detected between items:', {
         newItem: {
@@ -784,12 +787,17 @@ const packItems = (items: CargoItem[], container: Container): PackedResult => {
 };
 
 // Define algorithm type
-type PackingAlgorithm = (items: CargoItem[], container: Container) => PackedResult;
+type PackingAlgorithm = (items: CargoItem[], container: Container, progressCallback?: (progress: number, state: any) => void) => PackedResult | Promise<PackedResult>;
+
+// Import the reinforcement learning packer
+import { reinforcementLearningPacker } from './reinforcementLearningPacker';
 
 // Algorithm implementations
 const algorithms: Record<string, PackingAlgorithm> = {
   // Default algorithm - already implemented
   default: packItems,
+  // Reinforcement Learning with pre-trained model
+  reinforcement_learning: reinforcementLearningPacker,
   
   // Guillotine Cut Algorithm
   extreme_point: (items: CargoItem[], container: Container): PackedResult => {
@@ -2277,8 +2285,8 @@ const algorithms: Record<string, PackingAlgorithm> = {
         }
         
         // Check if this item is directly below and supporting the new item
-        // Using a smaller tolerance to ensure items are truly supported
-        if (Math.abs(packedItem.position.y + itemHeight - position.y) < 0.001) {
+        // Using a slightly larger tolerance to ensure items are truly supported
+        if (Math.abs(packedItem.position.y + itemHeight - position.y) < 0.01) {
           // Calculate the overlap area on the XZ plane
           const overlapX = Math.max(0, 
             Math.min(position.x + rotation.length, packedItem.position.x + itemLength) - 
@@ -2292,16 +2300,30 @@ const algorithms: Record<string, PackingAlgorithm> = {
         }
       }
       
-      // Require a minimum support percentage to prevent floating
+      // Calculate support percentage
       const supportPercentage = supportedArea / bottomFaceArea;
       
-      // If support is less than 50%, consider the item floating
-      if (supportPercentage < 0.5) {
-        console.log('Item would be floating - insufficient support:', supportPercentage);
-        return 0; // No support - item would be floating
+      // If item is on the ground, it's fully supported
+      if (position.y === 0) {
+        return 1.0;
       }
       
-      return supportPercentage;
+      // Log support percentage for debugging if it's very low
+      if (supportPercentage < 0.2) {
+        console.log('Item has low support:', (supportPercentage * 100).toFixed(1) + '%');
+      }
+      
+      // For items not on the ground, ensure a minimum support of 10%
+      // but still allow placement with lower support if needed
+      const minSupport = 0.1; // 10% minimum support
+      const effectiveSupport = Math.max(supportPercentage, minSupport);
+      
+      // Apply a non-linear scaling to make higher support more valuable
+      // but still allow placement with lower support
+      const stabilityScore = Math.pow(effectiveSupport, 0.5); // Square root scaling
+      
+      // Ensure we return a value between 0.1 and 1.0
+      return Math.max(0.1, Math.min(1.0, stabilityScore));
     };
     
     // Calculate average distance to packed items
@@ -2886,7 +2908,7 @@ const algorithms: Record<string, PackingAlgorithm> = {
 // Worker message handler
 console.log('Setting up worker message handler');
 
-self.onmessage = (event) => {
+self.onmessage = async (event) => {
   console.log('Worker received message:', event.data);
   
   const { items, container, algorithm = 'default' } = event.data;
@@ -2922,8 +2944,18 @@ self.onmessage = (event) => {
       totalWeight: 0
     });
     
-    // Run the selected algorithm
-    const result = selectedAlgorithm(items, container);
+    // Progress callback for async algorithms
+    const progressCallback = (progress: number, state: any) => {
+      self.postMessage({
+        type: 'progress',
+        value: progress,
+        ...state
+      });
+    };
+    
+    // Run the selected algorithm (handle both sync and async algorithms)
+    const resultPromise = selectedAlgorithm(items, container, progressCallback);
+    const result = resultPromise instanceof Promise ? await resultPromise : resultPromise;
     
     // Ensure the result has all required properties
     const validatedResult = {
