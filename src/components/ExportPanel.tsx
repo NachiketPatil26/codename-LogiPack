@@ -3,6 +3,7 @@ import { FileImage, File as FilePdf, FileText, CheckCircle, AlertCircle, Boxes }
 import { Container, CargoItem, PackedResult } from '../types';
 import { jsPDF } from 'jspdf';
 import { captureCanvas } from '../utils/canvasExport';
+import { renderAllOrthographicViews } from '../utils/orthographicViews';
 
 interface ExportPanelProps {
   container: Container;
@@ -19,111 +20,177 @@ const ExportPanel: React.FC<ExportPanelProps> = ({
   canvas
 }) => {
   const handleExportImage = async () => {
-    if (!canvas) return;
+    if (!packedResult?.packedItems) {
+      console.error('No packed items available for export');
+      return;
+    }
 
-    const imageData = await captureCanvas(canvas);
-    const link = document.createElement('a');
-    link.download = `container-load-plan-${new Date().toISOString().slice(0, 10)}.png`;
-    link.href = imageData;
-    link.click();
+    try {
+      console.log('Generating orthographic views for export');
+      
+      // Generate orthographic views (top, front, side)
+      const orthographicViews = renderAllOrthographicViews(
+        container,
+        packedResult.packedItems,
+        800, // width
+        600  // height
+      );
+      
+      // Create a combined image with all views
+      const combinedCanvas = document.createElement('canvas');
+      combinedCanvas.width = 800 * 2; // Two views side by side
+      combinedCanvas.height = 600 * 2; // Two views stacked vertically
+      const ctx = combinedCanvas.getContext('2d');
+      
+      if (!ctx) {
+        console.error('Could not get 2D context for combined canvas');
+        return;
+      }
+      
+      // Set white background
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, combinedCanvas.width, combinedCanvas.height);
+      
+      // Load and draw all views
+      const drawImage = (src: string, x: number, y: number, label: string) => {
+        return new Promise<void>((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            ctx.drawImage(img, x, y, 800, 600);
+            
+            // Add label
+            ctx.font = 'bold 24px Arial';
+            ctx.fillStyle = '#000000';
+            ctx.fillText(label, x + 10, y + 30);
+            
+            resolve();
+          };
+          img.src = src;
+        });
+      };
+      
+      // Draw all views with labels
+      await Promise.all([
+        drawImage(orthographicViews.top, 0, 0, 'Top View'),
+        drawImage(orthographicViews.front, 800, 0, 'Front View'),
+        drawImage(orthographicViews.side, 0, 600, 'Side View')
+      ]);
+      
+      // Add perspective view if canvas is available
+      if (canvas) {
+        const perspectiveView = await captureCanvas(canvas);
+        await drawImage(perspectiveView, 800, 600, 'Perspective View');
+      }
+      
+      // Add title and metadata
+      ctx.font = 'bold 32px Arial';
+      ctx.fillStyle = '#000000';
+      ctx.fillText('Container Load Plan - Orthographic Views', 20, combinedCanvas.height - 40);
+      
+      ctx.font = '16px Arial';
+      ctx.fillText(`Container: ${container.name} (${container.length}×${container.width}×${container.height} cm)`, 20, combinedCanvas.height - 15);
+      ctx.fillText(`Space Utilization: ${packedResult.containerFillPercentage.toFixed(1)}%`, 500, combinedCanvas.height - 15);
+      
+      // Create and trigger download
+      const link = document.createElement('a');
+      link.download = `container-load-plan-orthographic-${new Date().toISOString().slice(0, 10)}.png`;
+      link.href = combinedCanvas.toDataURL('image/png', 1.0);
+      link.click();
+    } catch (error) {
+      console.error('Error exporting orthographic views:', error);
+    }
   };
   
   const handleExportPdf = async () => {
-    if (!canvas) return;
+    if (!packedResult?.packedItems) {
+      console.error('No packed items available for PDF export');
+      return;
+    }
     
-    const imageData = await captureCanvas(canvas);
-    const pdf = new jsPDF('landscape', 'mm', 'a4');
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    
-    // Add title
-    pdf.setFontSize(16);
-    pdf.text('Container Load Plan', 14, 15);
-    
-    // Add date
-    pdf.setFontSize(10);
-    pdf.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 22);
-    
-    // Add container info
-    pdf.setFontSize(12);
-    pdf.text(`Container: ${container.name} (${container.length} × ${container.width} × ${container.height} cm)`, 14, 30);
-    
-    // Add statistics
-    pdf.text(`Space Utilization: ${packedResult.containerFillPercentage.toFixed(1)}%`, 14, 38);
-    pdf.text(`Weight Utilization: ${packedResult.weightCapacityPercentage.toFixed(1)}% (${packedResult.totalWeight} kg of ${container.maxWeight} kg)`, 14, 46);
-    pdf.text(`Items Loaded: ${packedResult.packedItems.length} of ${cargoItems.length}`, 14, 54);
-    
-    // Add the captured image
-    const imgWidth = pageWidth - 30;
-    const imgHeight = 80;
-    pdf.addImage(imageData, 'PNG', 15, 62, imgWidth, imgHeight);
-    
-    // Add packed items table
-    pdf.text('Packed Items:', 14, 150);
-    
-    let yPos = 158;
-    pdf.setFontSize(9);
-    pdf.text('Name', 14, yPos);
-    pdf.text('Dimensions (cm)', 60, yPos);
-    pdf.text('Weight (kg)', 110, yPos);
-    pdf.text('Position (x,y,z)', 150, yPos);
-    pdf.text('Color', 200, yPos);
-    
-    yPos += 5;
-    pdf.setDrawColor(200, 200, 200);
-    pdf.line(14, yPos, pageWidth - 14, yPos);
-    
-    yPos += 6;
-    pdf.setFontSize(8);
-    
-    packedResult.packedItems.forEach((item) => {
-      if (yPos > pageHeight - 20) {
-        pdf.addPage();
-        yPos = 20;
-        
-        // Add header to new page
-        pdf.setFontSize(9);
-        pdf.text('Name', 14, yPos);
-        pdf.text('Dimensions (cm)', 60, yPos);
-        pdf.text('Weight (kg)', 110, yPos);
-        pdf.text('Position (x,y,z)', 150, yPos);
-        pdf.text('Color', 200, yPos);
-        
-        yPos += 5;
-        pdf.setDrawColor(200, 200, 200);
-        pdf.line(14, yPos, pageWidth - 14, yPos);
-        
-        yPos += 6;
-        pdf.setFontSize(8);
-      }
+    try {
+      console.log('Generating orthographic views for PDF export');
       
-      pdf.text(item.name, 14, yPos);
-      pdf.text(`${item.length} × ${item.width} × ${item.height}`, 60, yPos);
-      pdf.text(`${item.weight}`, 110, yPos);
-      pdf.text(`(${item.position.x}, ${item.position.y}, ${item.position.z})`, 150, yPos);
-      pdf.text(item.color || '#6366f1', 200, yPos);
+      // Generate orthographic views (top, front, side)
+      const orthographicViews = renderAllOrthographicViews(
+        container,
+        packedResult.packedItems,
+        800, // width
+        600  // height
+      );
       
-      yPos += 6;
-    });
-    
-    // Check if there are unpacked items
-    if (packedResult.unpackedItems.length > 0) {
-      if (yPos > pageHeight - 40) {
-        pdf.addPage();
-        yPos = 20;
-      } else {
-        yPos += 10;
-      }
+      // Create PDF document
+      const pdf = new jsPDF('landscape', 'mm', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
       
+      // Add title with styling
+      pdf.setFontSize(22);
+      pdf.setTextColor(33, 33, 33);
+      pdf.text('Container Load Plan - Technical Views', 14, 15);
+      
+      // Add date
+      pdf.setFontSize(10);
+      pdf.setTextColor(100, 100, 100);
+      pdf.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 22);
+      
+      // Add container info with styling
       pdf.setFontSize(12);
-      pdf.text('Unpacked Items:', 14, yPos);
+      pdf.setTextColor(33, 33, 33);
+      pdf.text(`Container: ${container.name} (${container.length} × ${container.width} × ${container.height} cm)`, 14, 30);
       
-      yPos += 8;
+      // Add statistics with styling
+      pdf.setTextColor(50, 50, 50);
+      pdf.text(`Space Utilization: ${packedResult.containerFillPercentage.toFixed(1)}%`, 14, 38);
+      pdf.text(`Weight Utilization: ${packedResult.weightCapacityPercentage.toFixed(1)}% (${packedResult.totalWeight} kg of ${container.maxWeight} kg)`, 14, 46);
+      pdf.text(`Items Loaded: ${packedResult.packedItems.length} of ${cargoItems.length}`, 14, 54);
+      
+      // Calculate dimensions for orthographic views
+      const viewWidth = (pageWidth - 30) / 2; // Two views side by side
+      const viewHeight = viewWidth * 0.75; // Maintain aspect ratio
+      
+      // Add orthographic views section title
+      pdf.setFontSize(14);
+      pdf.setTextColor(33, 33, 33);
+      pdf.text('Orthographic Views', 14, 62);
+      
+      // Add borders and labels for each view
+      const addViewWithLabel = (imageData: string, x: number, y: number, label: string) => {
+        // Add border
+        pdf.setDrawColor(200, 200, 200);
+        pdf.setLineWidth(0.5);
+        pdf.rect(x, y, viewWidth, viewHeight);
+        
+        // Add the image
+        pdf.addImage(imageData, 'PNG', x, y, viewWidth, viewHeight);
+        
+        // Add label
+        pdf.setFontSize(10);
+        pdf.setTextColor(33, 33, 33);
+        pdf.text(label, x + 2, y + 5);
+      };
+      
+      // Add the orthographic views
+      const startY = 65;
+      addViewWithLabel(orthographicViews.top, 14, startY, 'Top View');
+      addViewWithLabel(orthographicViews.front, 14 + viewWidth + 2, startY, 'Front View');
+      addViewWithLabel(orthographicViews.side, 14, startY + viewHeight + 2, 'Side View');
+      
+      // Add perspective view if canvas is available
+      if (canvas) {
+        const perspectiveView = await captureCanvas(canvas);
+        addViewWithLabel(perspectiveView, 14 + viewWidth + 2, startY + viewHeight + 2, 'Perspective View');
+      }
+      
+      // Add packed items table
+      pdf.text('Packed Items:', 14, 150);
+      
+      let yPos = 158;
       pdf.setFontSize(9);
       pdf.text('Name', 14, yPos);
       pdf.text('Dimensions (cm)', 60, yPos);
       pdf.text('Weight (kg)', 110, yPos);
-      pdf.text('Color', 150, yPos);
+      pdf.text('Position (x,y,z)', 150, yPos);
+      pdf.text('Color', 200, yPos);
       
       yPos += 5;
       pdf.setDrawColor(200, 200, 200);
@@ -132,7 +199,7 @@ const ExportPanel: React.FC<ExportPanelProps> = ({
       yPos += 6;
       pdf.setFontSize(8);
       
-      packedResult.unpackedItems.forEach((item) => {
+      packedResult.packedItems.forEach((item) => {
         if (yPos > pageHeight - 20) {
           pdf.addPage();
           yPos = 20;
@@ -142,7 +209,8 @@ const ExportPanel: React.FC<ExportPanelProps> = ({
           pdf.text('Name', 14, yPos);
           pdf.text('Dimensions (cm)', 60, yPos);
           pdf.text('Weight (kg)', 110, yPos);
-          pdf.text('Color', 150, yPos);
+          pdf.text('Position (x,y,z)', 150, yPos);
+          pdf.text('Color', 200, yPos);
           
           yPos += 5;
           pdf.setDrawColor(200, 200, 200);
@@ -155,14 +223,72 @@ const ExportPanel: React.FC<ExportPanelProps> = ({
         pdf.text(item.name, 14, yPos);
         pdf.text(`${item.length} × ${item.width} × ${item.height}`, 60, yPos);
         pdf.text(`${item.weight}`, 110, yPos);
-        pdf.text(item.color || '#6366f1', 150, yPos);
+        pdf.text(`(${item.position.x}, ${item.position.y}, ${item.position.z})`, 150, yPos);
+        pdf.text(item.color || '#6366f1', 200, yPos);
         
         yPos += 6;
       });
-    }
     
-    // Save the PDF
-    pdf.save(`container-load-plan-${new Date().toISOString().slice(0, 10)}.pdf`);
+      // Check if there are unpacked items
+      if (packedResult.unpackedItems.length > 0) {
+        if (yPos > pageHeight - 40) {
+          pdf.addPage();
+          yPos = 20;
+        } else {
+          yPos += 10;
+        }
+        
+        pdf.setFontSize(12);
+        pdf.text('Unpacked Items:', 14, yPos);
+        
+        yPos += 8;
+        pdf.setFontSize(9);
+        pdf.text('Name', 14, yPos);
+        pdf.text('Dimensions (cm)', 60, yPos);
+        pdf.text('Weight (kg)', 110, yPos);
+        pdf.text('Color', 150, yPos);
+        
+        yPos += 5;
+        pdf.setDrawColor(200, 200, 200);
+        pdf.line(14, yPos, pageWidth - 14, yPos);
+        
+        yPos += 6;
+        pdf.setFontSize(8);
+        
+        packedResult.unpackedItems.forEach((item) => {
+          if (yPos > pageHeight - 20) {
+            pdf.addPage();
+            yPos = 20;
+            
+            // Add header to new page
+            pdf.setFontSize(9);
+            pdf.text('Name', 14, yPos);
+            pdf.text('Dimensions (cm)', 60, yPos);
+            pdf.text('Weight (kg)', 110, yPos);
+            pdf.text('Color', 150, yPos);
+            
+            yPos += 5;
+            pdf.setDrawColor(200, 200, 200);
+            pdf.line(14, yPos, pageWidth - 14, yPos);
+            
+            yPos += 6;
+            pdf.setFontSize(8);
+          }
+          
+          pdf.text(item.name, 14, yPos);
+          pdf.text(`${item.length} × ${item.width} × ${item.height}`, 60, yPos);
+          pdf.text(`${item.weight}`, 110, yPos);
+          pdf.text(item.color || '#6366f1', 150, yPos);
+          
+          yPos += 6;
+        });
+      }
+    
+      // Save the PDF
+      pdf.save(`container-load-plan-orthographic-${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (error) {
+      console.error('Error exporting PDF:', error);
+    }
   };
   
   // Ensure we have valid data before rendering
@@ -176,7 +302,7 @@ const ExportPanel: React.FC<ExportPanelProps> = ({
       </div>
     );
   }
-
+  
   // Safely get lengths with fallbacks
   const packedItemsCount = packedResult.packedItems?.length || 0;
   const unpackedItemsCount = packedResult.unpackedItems?.length || 0;

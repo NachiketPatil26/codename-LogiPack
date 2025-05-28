@@ -1,0 +1,753 @@
+// Physics-Enhanced Guillotine Algorithm with Center of Gravity and Torque Constraints
+// Professional-grade implementation for logistics industry applications
+
+import { CargoItem, Container, PackedItem, PackedResult, ConstraintType } from '../types';
+
+/**
+ * Physics-Enhanced Guillotine Algorithm
+ * Optimizes packing with physical constraints for improved stability and safety:
+ * - Center of gravity optimization
+ * - Torque minimization
+ * - Weight distribution balancing
+ * - Proper support for items (no floating)
+ * - Fragile item handling
+ * - Stackability constraints
+ */
+export const physicsEnhancedPacker = (items: CargoItem[], container: Container, progressCallback?: (progress: number, state: any) => void): PackedResult => {
+  console.log('Using Physics-Enhanced Guillotine Algorithm');
+  
+  // Constants for physics and stability calculations
+  const MAX_ACCEPTABLE_TORQUE_RATIO = 0.7; // Maximum acceptable torque as ratio of total weight
+  const MAX_COG_DEVIATION_RATIO = 0.2; // Maximum deviation of COG from ideal center (as ratio of dimension)
+  const MIN_SUPPORT_RATIO = 0.7; // Minimum support required beneath an item (70% of base area)
+  
+  // Sort items by multiple criteria for optimal packing
+  const sortedItems = [...items].sort((a, b) => {
+    // Primary sort: Heaviest items first (for better stability)
+    if (Math.abs(b.weight - a.weight) > 0.01) return b.weight - a.weight;
+    
+    // Secondary sort: Larger base area first (better stability)
+    const baseAreaA = a.length * a.width;
+    const baseAreaB = b.length * b.width;
+    if (Math.abs(baseAreaB - baseAreaA) > 0.01) return baseAreaB - baseAreaA;
+    
+    // Tertiary sort: Larger volume first (better space utilization)
+    const volumeA = a.length * a.width * a.height;
+    const volumeB = b.length * b.width * b.height;
+    return volumeB - volumeA;
+  });
+  
+  // Group similar items together for better distribution
+  const groupedItems: CargoItem[][] = [];
+  
+  // Group by similar dimensions (within 10% tolerance)
+  const dimensionTolerance = 0.1;
+  
+  for (const item of sortedItems) {
+    let foundGroup = false;
+    
+    for (const group of groupedItems) {
+      const referenceItem = group[0];
+      
+      // Check if dimensions are similar (within tolerance)
+      const lengthSimilar = Math.abs(item.length - referenceItem.length) / referenceItem.length <= dimensionTolerance;
+      const widthSimilar = Math.abs(item.width - referenceItem.width) / referenceItem.width <= dimensionTolerance;
+      const heightSimilar = Math.abs(item.height - referenceItem.height) / referenceItem.height <= dimensionTolerance;
+      
+      if (lengthSimilar && widthSimilar && heightSimilar) {
+        group.push(item);
+        foundGroup = true;
+        break;
+      }
+    }
+    
+    if (!foundGroup) {
+      groupedItems.push([item]);
+    }
+  }
+  
+  // Flatten groups but maintain grouping order
+  const reorderedItems: CargoItem[] = [];
+  for (const group of groupedItems) {
+    reorderedItems.push(...group);
+  }
+  
+  // Initialize container dimensions and tracking variables
+  const containerLength = container.length;
+  const containerWidth = container.width;
+  const containerHeight = container.height;
+  const containerVolume = containerLength * containerWidth * containerHeight;
+  
+  // Track packed and unpacked items
+  const packedItems: PackedItem[] = [];
+  const unpackedItems: CargoItem[] = [];
+  let totalVolumePacked = 0;
+  let totalWeight = 0;
+  
+  // Ideal center of gravity (center of container base)
+  const idealCenterOfGravity = {
+    x: containerLength / 2,
+    y: 0, // As low as possible
+    z: containerWidth / 2
+  };
+  
+  // Define a space (free area) in the container
+  type Space = {
+    x: number; // x-coordinate (length)
+    y: number; // y-coordinate (height)
+    z: number; // z-coordinate (width)
+    length: number; // length dimension (along x-axis)
+    height: number; // height dimension (along y-axis)
+    width: number; // width dimension (along z-axis)
+  };
+  
+  // Initialize with one space representing the entire container
+  let spaces: Space[] = [
+    {
+      x: 0,
+      y: 0,
+      z: 0,
+      length: containerLength,
+      height: containerHeight,
+      width: containerWidth
+    }
+  ];
+  
+  // Function to calculate center of gravity of packed items
+  const calculateCenterOfGravity = (items: PackedItem[]): { x: number; y: number; z: number } => {
+    if (items.length === 0) return { x: 0, y: 0, z: 0 };
+    
+    let totalWeight = 0;
+    let totalMomentX = 0;
+    let totalMomentY = 0;
+    let totalMomentZ = 0;
+    
+    for (const item of items) {
+      // Calculate center point of the item
+      const centerX = item.position.x + item.length / 2;
+      const centerY = item.position.y + item.height / 2;
+      const centerZ = item.position.z + item.width / 2;
+      
+      // Calculate moment (weight * distance from origin)
+      totalMomentX += centerX * item.weight;
+      totalMomentY += centerY * item.weight;
+      totalMomentZ += centerZ * item.weight;
+      
+      totalWeight += item.weight;
+    }
+    
+    // If no weight (shouldn't happen), return default
+    if (totalWeight === 0) return { x: 0, y: 0, z: 0 };
+    
+    return {
+      x: totalMomentX / totalWeight,
+      y: totalMomentY / totalWeight,
+      z: totalMomentZ / totalWeight
+    };
+  };
+  
+  // Calculate torque (rotational force) on the container
+  const calculateTorque = (items: PackedItem[], cog: { x: number; y: number; z: number }): number => {
+    let totalTorque = 0;
+    
+    for (const item of items) {
+      // Calculate center of item (x, z for horizontal plane, y for vertical position)
+      const centerX = item.position.x + item.length / 2;
+      const centerZ = item.position.z + item.width / 2;
+      
+      // Calculate distance from center of gravity in horizontal plane (for tipping calculation)
+      const distanceX = centerX - cog.x;
+      const distanceZ = centerZ - cog.z;
+      
+      // Calculate distance (lever arm) - only consider horizontal plane for tipping
+      const distance = Math.sqrt(distanceX * distanceX + distanceZ * distanceZ);
+      
+      // Calculate torque contribution (weight * distance)
+      totalTorque += item.weight * distance;
+    }
+    
+    return totalTorque;
+  };
+  
+  // Calculate stability score for an item placement (higher is better)
+  const calculateStabilityScore = (
+    item: CargoItem, 
+    position: { x: number; y: number; z: number }, 
+    currentPackedItems: PackedItem[]
+  ): number => {
+    // Create a temporary item to test placement
+    const tempItem: PackedItem = {
+      ...item,
+      position,
+      rotation: { x: 0, y: 0, z: 0 }
+    };
+    
+    // Create a temporary array with all currently packed items plus this new one
+    const tempPackedItems = [...currentPackedItems, tempItem];
+    
+    // Calculate center of gravity with this item added
+    const cog = calculateCenterOfGravity(tempPackedItems);
+    
+    // Calculate support score (how well the item is supported from below)
+    let supportScore = 0;
+    
+    // If item is on the ground, it's fully supported
+    if (position.y === 0) {
+      supportScore = 1;
+    } else {
+      // Calculate how much of this item's base is supported by items below
+      let supportedArea = 0;
+      const itemBaseArea = item.length * item.width;
+      
+      for (const packedItem of currentPackedItems) {
+        // Only consider items directly below this one
+        if (packedItem.position.y + packedItem.height === position.y) {
+          // Calculate overlap area (intersection of rectangles)
+          const overlapX = Math.max(
+            0,
+            Math.min(position.x + item.length, packedItem.position.x + packedItem.length) -
+            Math.max(position.x, packedItem.position.x)
+          );
+          
+          const overlapZ = Math.max(
+            0,
+            Math.min(position.z + item.width, packedItem.position.z + packedItem.width) -
+            Math.max(position.z, packedItem.position.z)
+          );
+          
+          supportedArea += overlapX * overlapZ;
+        }
+      }
+      
+      supportScore = Math.min(1, supportedArea / (itemBaseArea * MIN_SUPPORT_RATIO));
+    }
+    
+    // Calculate COG deviation from ideal (lower is better)
+    const cogDeviationX = Math.abs(cog.x - idealCenterOfGravity.x) / containerLength;
+    const cogDeviationZ = Math.abs(cog.z - idealCenterOfGravity.z) / containerWidth;
+    const cogDeviation = (cogDeviationX + cogDeviationZ) / 2;
+    const cogDeviationScore = 1 - Math.min(1, cogDeviation / MAX_COG_DEVIATION_RATIO);
+    
+    // Calculate torque score (lower torque is better)
+    const totalWeight = tempPackedItems.reduce((sum, item) => sum + item.weight, 0);
+    const torque = calculateTorque(tempPackedItems, cog);
+    const maxAcceptableTorque = totalWeight * MAX_ACCEPTABLE_TORQUE_RATIO;
+    const torqueScore = 1 - Math.min(1, torque / maxAcceptableTorque);
+    
+    // Calculate height efficiency (lower center of gravity is better)
+    const heightScore = 1 - (cog.y / containerHeight);
+    
+    // Calculate balance score (how well this placement balances the load)
+    // Higher score for positions that move COG closer to ideal center
+    let balanceScore = 0;
+    
+    // If this is the first item, prioritize center placement
+    if (currentPackedItems.length === 0) {
+      // Score based on how close to center the item is placed
+      const distanceFromCenterX = Math.abs(position.x + item.length/2 - containerLength/2) / containerLength;
+      const distanceFromCenterZ = Math.abs(position.z + item.width/2 - containerWidth/2) / containerWidth;
+      balanceScore = 1 - ((distanceFromCenterX + distanceFromCenterZ) / 2);
+    } else {
+      // For subsequent items, score based on how they improve COG
+      const currentCog = calculateCenterOfGravity(currentPackedItems);
+      
+      // Calculate current deviation from ideal
+      const currentDeviationX = Math.abs(currentCog.x - idealCenterOfGravity.x) / containerLength;
+      const currentDeviationZ = Math.abs(currentCog.z - idealCenterOfGravity.z) / containerWidth;
+      const currentDeviation = (currentDeviationX + currentDeviationZ) / 2;
+      
+      // Calculate improvement in deviation
+      const improvement = Math.max(0, currentDeviation - cogDeviation);
+      balanceScore = improvement * 5; // Amplify the improvement
+      
+      // Cap at 1.0
+      balanceScore = Math.min(1, balanceScore);
+    }
+    
+    // Calculate final stability score (weighted combination)
+    // For the first few items, heavily prioritize balance and COG
+    if (currentPackedItems.length < 5) {
+      return (
+        supportScore * 0.2 +
+        cogDeviationScore * 0.4 +  // Increased weight for COG
+        torqueScore * 0.25 +       // Increased weight for torque
+        heightScore * 0.05 +       // Reduced weight for height
+        balanceScore * 0.1
+      );
+    } else {
+      return (
+        supportScore * 0.3 +
+        cogDeviationScore * 0.3 +
+        torqueScore * 0.2 +
+        heightScore * 0.1 +
+        balanceScore * 0.1
+      );
+    }
+  };
+  
+  // Function to calculate contact area between items (higher contact = better stability)
+  const calculateContactArea = (
+    item: CargoItem,
+    position: { x: number; y: number; z: number },
+    packedItems: PackedItem[]
+  ): number => {
+    let contactArea = 0;
+    const itemBaseArea = item.length * item.width;
+    
+    // If on ground, count full base contact
+    if (position.y === 0) {
+      contactArea += itemBaseArea;
+    }
+    
+    for (const packedItem of packedItems) {
+      // Check contact with each face
+      
+      // Bottom face contact (support)
+      if (position.y === packedItem.position.y + packedItem.height) {
+        const overlapX = Math.max(
+          0,
+          Math.min(position.x + item.length, packedItem.position.x + packedItem.length) -
+          Math.max(position.x, packedItem.position.x)
+        );
+        
+        const overlapZ = Math.max(
+          0,
+          Math.min(position.z + item.width, packedItem.position.z + packedItem.width) -
+          Math.max(position.z, packedItem.position.z)
+        );
+        
+        contactArea += overlapX * overlapZ;
+      }
+      
+      // Side contacts (left, right, front, back, top)
+      // Left face
+      const touchingLeft = 
+        position.x === packedItem.position.x + packedItem.length &&
+        position.z < packedItem.position.z + packedItem.width &&
+        position.z + item.width > packedItem.position.z &&
+        position.y < packedItem.position.y + packedItem.height &&
+        position.y + item.height > packedItem.position.y;
+        
+      // Right face
+      const touchingRight = 
+        position.x + item.length === packedItem.position.x &&
+        position.z < packedItem.position.z + packedItem.width &&
+        position.z + item.width > packedItem.position.z &&
+        position.y < packedItem.position.y + packedItem.height &&
+        position.y + item.height > packedItem.position.y;
+        
+      // Front face
+      const touchingFront = 
+        position.z === packedItem.position.z + packedItem.width &&
+        position.x < packedItem.position.x + packedItem.length &&
+        position.x + item.length > packedItem.position.x &&
+        position.y < packedItem.position.y + packedItem.height &&
+        position.y + item.height > packedItem.position.y;
+        
+      // Back face
+      const touchingBack = 
+        position.z + item.width === packedItem.position.z &&
+        position.x < packedItem.position.x + packedItem.length &&
+        position.x + item.length > packedItem.position.x &&
+        position.y < packedItem.position.y + packedItem.height &&
+        position.y + item.height > packedItem.position.y;
+        
+      // Top face
+      const touchingTop = 
+        position.y + item.height === packedItem.position.y &&
+        position.x < packedItem.position.x + packedItem.length &&
+        position.x + item.length > packedItem.position.x &&
+        position.z < packedItem.position.z + packedItem.width &&
+        position.z + item.width > packedItem.position.z;
+      
+      // Add contact area for each touching face (simplified calculation)
+      if (touchingLeft || touchingRight) {
+        contactArea += item.height * item.width * 0.5; // Only count half for side contacts
+      }
+      if (touchingFront || touchingBack) {
+        contactArea += item.height * item.length * 0.5;
+      }
+      if (touchingTop) {
+        contactArea += item.length * item.width * 0.5;
+      }
+    }
+    
+    return contactArea;
+  };
+  
+  // Function to split a space after placing an item using guillotine cuts
+  const splitSpace = (space: Space, item: CargoItem, x: number, y: number, z: number): Space[] => {
+    // Create the six possible spaces after placing the item
+    const possibleSpaces: Space[] = [];
+    
+    // Space to the right of the item (along x-axis/length)
+    if (x + item.length < space.x + space.length) {
+      possibleSpaces.push({
+        x: x + item.length,
+        y: space.y,
+        z: space.z,
+        length: (space.x + space.length) - (x + item.length),
+        height: space.height,
+        width: space.width
+      });
+    }
+    
+    // Space to the left of the item (along x-axis/length)
+    if (x > space.x) {
+      possibleSpaces.push({
+        x: space.x,
+        y: space.y,
+        z: space.z,
+        length: x - space.x,
+        height: space.height,
+        width: space.width
+      });
+    }
+    
+    // Space above the item (along y-axis/height)
+    if (y + item.height < space.y + space.height) {
+      possibleSpaces.push({
+        x: space.x,
+        y: y + item.height,
+        z: space.z,
+        length: space.length,
+        height: (space.y + space.height) - (y + item.height),
+        width: space.width
+      });
+    }
+    
+    // Space in front of the item (along z-axis/width)
+    if (z + item.width < space.z + space.width) {
+      possibleSpaces.push({
+        x: space.x,
+        y: space.y,
+        z: z + item.width,
+        length: space.length,
+        height: space.height,
+        width: (space.z + space.width) - (z + item.width)
+      });
+    }
+    
+    // Space behind the item (along z-axis/width)
+    if (z > space.z) {
+      possibleSpaces.push({
+        x: space.x,
+        y: space.y,
+        z: space.z,
+        length: space.length,
+        height: space.height,
+        width: z - space.z
+      });
+    }
+    
+    // Filter out spaces that are too small to be useful
+    const minDimension = 0.1; // Minimum useful dimension in units
+    const filteredSpaces = possibleSpaces.filter(space => 
+      space.length >= minDimension && 
+      space.height >= minDimension && 
+      space.width >= minDimension
+    );
+    
+    return filteredSpaces;
+  };
+  
+  // Check if an item fits in a space
+  const itemFitsInSpace = (item: CargoItem, space: Space): boolean => {
+    return (
+      item.length <= space.length &&
+      item.height <= space.height &&
+      item.width <= space.width
+    );
+  };
+  
+  // Check if an item would overlap with packed items
+  const itemOverlapsWithPacked = (item: CargoItem, x: number, y: number, z: number): boolean => {
+    for (const packedItem of packedItems) {
+      const px = packedItem.position.x;
+      const py = packedItem.position.y;
+      const pz = packedItem.position.z;
+      
+      // Check for overlap using AABB collision detection
+      if (x < px + packedItem.length && x + item.length > px &&
+          y < py + packedItem.height && y + item.height > py &&
+          z < pz + packedItem.width && z + item.width > pz) {
+        return true; // Overlap detected
+      }
+    }
+    return false; // No overlap
+  };
+  
+  // Check if an item has adequate support from below
+  const hasAdequateSupport = (item: CargoItem, x: number, y: number, z: number): boolean => {
+    // Items on the ground are always supported
+    if (y === 0) return true;
+    
+    // For items not on the ground, check support from items below
+    let supportedArea = 0;
+    const itemBaseArea = item.length * item.width;
+    
+    for (const packedItem of packedItems) {
+      // Only consider items directly below this one
+      if (Math.abs(packedItem.position.y + packedItem.height - y) < 0.001) {
+        // Calculate overlap area (intersection of rectangles)
+        const overlapX = Math.max(
+          0,
+          Math.min(x + item.length, packedItem.position.x + packedItem.length) -
+          Math.max(x, packedItem.position.x)
+        );
+        
+        const overlapZ = Math.max(
+          0,
+          Math.min(z + item.width, packedItem.position.z + packedItem.width) -
+          Math.max(z, packedItem.position.z)
+        );
+        
+        supportedArea += overlapX * overlapZ;
+      }
+    }
+    
+    // Check if supported area meets minimum support requirement
+    return supportedArea >= (itemBaseArea * MIN_SUPPORT_RATIO);
+  };
+  
+  // Check if an item placement respects weight constraints
+  const respectsWeightConstraints = (item: CargoItem, x: number, y: number, z: number): boolean => {
+    // Fragile items should not have heavy items on top
+    if (!item.constraints) return true; // No constraints
+    
+    for (const packedItem of packedItems) {
+      // Check if this item would be placed on top of a fragile item
+      if (packedItem.constraints?.some(c => c.type === ConstraintType.FRAGILE)) {
+        // Check if this item overlaps with the fragile item from above
+        if (y === packedItem.position.y + packedItem.height &&
+            x < packedItem.position.x + packedItem.length && x + item.length > packedItem.position.x &&
+            z < packedItem.position.z + packedItem.width && z + item.width > packedItem.position.z) {
+          // This item would be placed on top of a fragile item
+          // Check if this item is too heavy
+          const maxWeightForFragile = packedItem.constraints.find(c => c.type === ConstraintType.CAN_SUPPORT_WEIGHT)?.value || 0;
+          if (item.weight > maxWeightForFragile) {
+            return false; // Too heavy for the fragile item below
+          }
+        }
+      }
+    }
+    
+    return true;
+  };
+  
+  // Pack items using enhanced Guillotine algorithm with physics constraints
+  for (let i = 0; i < reorderedItems.length; i++) {
+    // Report progress if callback is provided
+    if (progressCallback) {
+      const progress = (i / reorderedItems.length) * 100;
+      progressCallback(progress, { packedItems, unpackedItems, totalVolumePacked, containerFillPercentage: (totalVolumePacked / containerVolume) * 100 });
+    }
+    const item = reorderedItems[i];
+    let packed = false;
+    
+    // For each available space
+    for (let j = 0; j < spaces.length; j++) {
+      const currentSpace = spaces[j];
+      
+      // Check if item fits in this space
+      if (!itemFitsInSpace(item, currentSpace)) continue;
+      
+      // Find all possible positions within this space
+      type Position = { x: number, y: number, z: number, space: number };
+      const possiblePositions: Position[] = [];
+      
+      // For the first few items, prioritize positions that distribute across the container
+      if (packedItems.length < 5) {
+        // Try different strategic positions based on how many items we've already packed
+        switch (packedItems.length) {
+          case 0: // First item - center of container
+            possiblePositions.push({
+              x: Math.max(currentSpace.x, (containerLength - item.length) / 2),
+              y: currentSpace.y,
+              z: Math.max(currentSpace.z, (containerWidth - item.width) / 2),
+              space: j
+            });
+            break;
+          case 1: // Second item - back left
+            possiblePositions.push({
+              x: currentSpace.x,
+              y: currentSpace.y,
+              z: currentSpace.z,
+              space: j
+            });
+            break;
+          case 2: // Third item - back right
+            possiblePositions.push({
+              x: Math.max(currentSpace.x, containerLength - item.length),
+              y: currentSpace.y,
+              z: currentSpace.z,
+              space: j
+            });
+            break;
+          case 3: // Fourth item - front left
+            possiblePositions.push({
+              x: currentSpace.x,
+              y: currentSpace.y,
+              z: Math.max(currentSpace.z, containerWidth - item.width),
+              space: j
+            });
+            break;
+          case 4: // Fifth item - front right
+            possiblePositions.push({
+              x: Math.max(currentSpace.x, containerLength - item.length),
+              y: currentSpace.y,
+              z: Math.max(currentSpace.z, containerWidth - item.width),
+              space: j
+            });
+            break;
+        }
+      }
+      
+      // Also try the default position at the bottom of the space
+      possiblePositions.push({
+        x: currentSpace.x,
+        y: currentSpace.y,
+        z: currentSpace.z,
+        space: j
+      });
+      
+      // Then try positions where the item would be placed on top of already packed items
+      for (const packedItem of packedItems) {
+        // Position on top of a packed item
+        if (packedItem.position.x + packedItem.length > currentSpace.x && 
+            packedItem.position.x < currentSpace.x + currentSpace.length &&
+            packedItem.position.z + packedItem.width > currentSpace.z && 
+            packedItem.position.z < currentSpace.z + currentSpace.width &&
+            packedItem.position.y + packedItem.height >= currentSpace.y && 
+            packedItem.position.y + packedItem.height < currentSpace.y + currentSpace.height - item.height) {
+          
+          possiblePositions.push({
+            x: Math.max(currentSpace.x, packedItem.position.x),
+            y: packedItem.position.y + packedItem.height,
+            z: Math.max(currentSpace.z, packedItem.position.z),
+            space: j
+          });
+        }
+      }
+      
+      // Score all possible positions
+      const scoredPositions = possiblePositions.filter(pos => {
+        // Skip positions that would cause overlap
+        if (itemOverlapsWithPacked(item, pos.x, pos.y, pos.z)) return false;
+        
+        // Skip positions without adequate support (prevents floating items)
+        if (!hasAdequateSupport(item, pos.x, pos.y, pos.z)) return false;
+        
+        // Skip positions that violate weight constraints
+        if (!respectsWeightConstraints(item, pos.x, pos.y, pos.z)) return false;
+        
+        return true;
+      }).map(pos => {
+        // Calculate stability score
+        const stabilityScore = calculateStabilityScore(item, pos, packedItems);
+        
+        // Calculate contact area score (normalized)
+        const contactArea = calculateContactArea(item, pos, packedItems);
+        const maxPossibleContact = 2 * (item.length * item.width + item.length * item.height + item.width * item.height);
+        const contactScore = contactArea / maxPossibleContact;
+        
+        // Calculate height score (lower is better for stability)
+        const heightScore = 1 - (pos.y / containerHeight);
+        
+        // Calculate torque score
+        const tempItem: PackedItem = {
+          ...item,
+          position: pos,
+          rotation: { x: 0, y: 0, z: 0 }
+        };
+        const tempPackedItems = [...packedItems, tempItem];
+        const cog = calculateCenterOfGravity(tempPackedItems);
+        const torque = calculateTorque(tempPackedItems, cog);
+        const totalWeight = tempPackedItems.reduce((sum, item) => sum + item.weight, 0);
+        const maxAcceptableTorque = totalWeight * MAX_ACCEPTABLE_TORQUE_RATIO;
+        const torqueScore = 1 - Math.min(1, torque / maxAcceptableTorque);
+        
+        // Final score: combination of all factors
+        // 30% weight on balance, 20% on height, 20% on torque, 30% on contact
+        const score = 0.3 * stabilityScore + 0.2 * heightScore + 0.2 * torqueScore + 0.3 * contactScore;
+        
+        return { pos, score, spaceIndex: pos.space };
+      });
+      
+      // If no valid positions, try next space
+      if (scoredPositions.length === 0) continue;
+      
+      // Sort positions by score (highest first)
+      scoredPositions.sort((a, b) => b.score - a.score);
+      
+      // Use the best position
+      const bestPosition = scoredPositions[0];
+      const x = bestPosition.pos.x;
+      const y = bestPosition.pos.y;
+      const z = bestPosition.pos.z;
+      const spaceIndex = bestPosition.spaceIndex;
+      const selectedSpace = spaces[spaceIndex];
+      
+      // We found a good position, proceed with placement
+      
+      // Add to packed items
+      packedItems.push({
+        id: item.id,
+        name: item.name,
+        width: item.width,
+        height: item.height,
+        length: item.length,
+        weight: item.weight,
+        color: item.color,
+        quantity: item.quantity,
+        constraints: item.constraints,
+        position: { x, y, z },
+        rotation: { x: 0, y: 0, z: 0 } // No rotation in this implementation
+      });
+      
+      // Update totals
+      const itemVolume = item.width * item.height * item.length;
+      totalVolumePacked += itemVolume;
+      totalWeight += item.weight;
+      
+      // Split the space and get new spaces
+      const newSpaces = splitSpace(selectedSpace, item, x, y, z);
+      
+      // Remove the used space and add new spaces
+      spaces.splice(spaceIndex, 1);
+      spaces.push(...newSpaces);
+      
+      packed = true;
+      break;
+    }
+    
+    // If item couldn't be packed, add to unpacked items
+    if (!packed) {
+      unpackedItems.push(item);
+    }
+  }
+  
+  // Calculate final statistics
+  const containerFillPercentage = (totalVolumePacked / containerVolume) * 100;
+  const weightCapacityPercentage = (totalWeight / container.maxWeight) * 100;
+  
+  // Calculate final center of gravity and stability metrics
+  const finalCog = calculateCenterOfGravity(packedItems);
+  const finalTorque = calculateTorque(packedItems, finalCog);
+  
+  // Log key metrics
+  console.log('Physics-Enhanced Packing Metrics:');
+  console.log(`- Total items packed: ${packedItems.length} of ${items.length}`);
+  console.log(`- Volume utilization: ${containerFillPercentage.toFixed(2)}%`);
+  console.log(`- Weight utilization: ${weightCapacityPercentage.toFixed(2)}%`);
+  console.log(`- Center of gravity: x=${finalCog.x.toFixed(2)}, y=${finalCog.y.toFixed(2)}, z=${finalCog.z.toFixed(2)}`);
+  console.log(`- Stability torque ratio: ${(finalTorque / totalWeight).toFixed(4)}`);
+  
+  return {
+    packedItems,
+    unpackedItems,
+    containerFillPercentage,
+    weightCapacityPercentage,
+    totalWeight
+  };
+};

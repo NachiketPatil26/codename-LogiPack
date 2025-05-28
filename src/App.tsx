@@ -109,9 +109,10 @@ function App() {
     setPackedResult(null);
   };
 
-  const handleCanvasReady = (newCanvas: HTMLCanvasElement) => {
+  const handleCanvasReady = useCallback((newCanvas: HTMLCanvasElement) => {
+    console.log('Canvas ready:', newCanvas);
     setCanvas(newCanvas);
-  };
+  }, []);
 
   return (
     <div className="min-h-screen flex flex-col bg-background">

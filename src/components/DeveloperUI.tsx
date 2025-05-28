@@ -21,6 +21,11 @@ const ALGORITHMS: Algorithm[] = [
     description: 'The current implementation using multiple strategies and heuristics.'
   },
   {
+    id: 'physics_enhanced_guillotine',
+    name: 'Physics-Enhanced Guillotine (Professional)',
+    description: 'Professional-grade algorithm with center of gravity, torque, and weight distribution optimization. Ideal for logistics companies.'
+  },
+  {
     id: 'extreme_point',
     name: 'Guillotine Cut Algorithm',
     description: 'Recursively cuts space into two parts using guillotine cuts.'
@@ -36,7 +41,7 @@ const ALGORITHMS: Algorithm[] = [
     description: 'Uses evolutionary approach to find optimal packing solutions.'
   },
   {
-    id: 'simulated_annealing',
+    id: 'Reinforcement Deep Learning',
     name: 'Reinforcement Deep Learning',
     description: 'Uses neural networks and reinforcement learning for optimal packing.'
   }

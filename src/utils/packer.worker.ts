@@ -792,12 +792,17 @@ type PackingAlgorithm = (items: CargoItem[], container: Container, progressCallb
 // Import the reinforcement learning packer
 import { reinforcementLearningPacker } from './reinforcementLearningPacker';
 
+// Import the physics-enhanced Guillotine packer
+import { physicsEnhancedPacker } from './physicsEnhancedPacker';
+
 // Algorithm implementations
 const algorithms: Record<string, PackingAlgorithm> = {
   // Default algorithm - already implemented
   default: packItems,
   // Reinforcement Learning with pre-trained model
   reinforcement_learning: reinforcementLearningPacker,
+  // Professional-grade physics-enhanced Guillotine algorithm
+  physics_enhanced_guillotine: physicsEnhancedPacker as PackingAlgorithm,
   
   // Guillotine Cut Algorithm
   extreme_point: (items: CargoItem[], container: Container): PackedResult => {

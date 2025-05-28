@@ -71,12 +71,18 @@ const Visualization: React.FC<VisualizationProps> = ({ container, packedResult, 
     }
   }, [packedResult]);
 
+  // Improved canvas reference handling for export functionality
   useEffect(() => {
-    const canvas = document.querySelector('canvas');
-    if (canvas && onCanvasReady) {
-      onCanvasReady(canvas);
-    }
-  }, [onCanvasReady]);
+    // Wait for the next frame to ensure the canvas is fully rendered
+    requestAnimationFrame(() => {
+      // Get the WebGL canvas from the DOM
+      const canvas = document.querySelector('canvas');
+      if (canvas && onCanvasReady) {
+        // Pass the canvas to the parent component for export
+        onCanvasReady(canvas);
+      }
+    });
+  }, [onCanvasReady, packedResult]); // Re-run when packedResult changes to ensure we have the latest render
 
   // Calculate percentage stats
   const fillPercentage = packedResult?.containerFillPercentage || 0;
