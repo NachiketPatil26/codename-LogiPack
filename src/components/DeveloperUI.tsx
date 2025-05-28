@@ -41,7 +41,7 @@ const ALGORITHMS: Algorithm[] = [
     description: 'Uses evolutionary approach to find optimal packing solutions.'
   },
   {
-    id: 'Reinforcement Deep Learning',
+    id: 'reinforcement_learning',
     name: 'Reinforcement Deep Learning',
     description: 'Uses neural networks and reinforcement learning for optimal packing.'
   }

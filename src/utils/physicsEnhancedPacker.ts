@@ -19,7 +19,7 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
   // Constants for physics and stability calculations
   const MAX_ACCEPTABLE_TORQUE_RATIO = 0.7; // Maximum acceptable torque as ratio of total weight
   const MAX_COG_DEVIATION_RATIO = 0.2; // Maximum deviation of COG from ideal center (as ratio of dimension)
-  const MIN_SUPPORT_RATIO = 0.7; // Minimum support required beneath an item (70% of base area)
+  const MIN_SUPPORT_RATIO = 0.5; // Minimum support required beneath an item (50% of base area) - reduced from 70% to allow more placements
   
   // Sort items by multiple criteria for optimal packing
   const sortedItems = [...items].sort((a, b) => {
@@ -375,18 +375,33 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
     return contactArea;
   };
   
-  // Function to split a space after placing an item using guillotine cuts
+  // Enhanced function to split a space after placing an item - optimized for tighter packing
   const splitSpace = (space: Space, item: CargoItem, x: number, y: number, z: number): Space[] => {
-    // Create the six possible spaces after placing the item
+    // Create more granular spaces after placing the item for tighter packing
     const possibleSpaces: Space[] = [];
     
+    // Calculate item dimensions and boundaries
+    const itemEndX = x + item.length;
+    const itemEndY = y + item.height;
+    const itemEndZ = z + item.width;
+    
+    // Calculate space boundaries
+    const spaceEndX = space.x + space.length;
+    const spaceEndY = space.y + space.height;
+    const spaceEndZ = space.z + space.width;
+    
+    // Minimum useful dimension - adjusted to be smaller for tighter packing
+    const minDimension = 0.01; // 0.1cm minimum - reduced for even tighter packing
+    
+    // 1. STANDARD GUILLOTINE SPACES (traditional approach)
+    
     // Space to the right of the item (along x-axis/length)
-    if (x + item.length < space.x + space.length) {
+    if (itemEndX < spaceEndX) {
       possibleSpaces.push({
-        x: x + item.length,
+        x: itemEndX,
         y: space.y,
         z: space.z,
-        length: (space.x + space.length) - (x + item.length),
+        length: spaceEndX - itemEndX,
         height: space.height,
         width: space.width
       });
@@ -405,26 +420,26 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
     }
     
     // Space above the item (along y-axis/height)
-    if (y + item.height < space.y + space.height) {
+    if (itemEndY < spaceEndY) {
       possibleSpaces.push({
         x: space.x,
-        y: y + item.height,
+        y: itemEndY,
         z: space.z,
         length: space.length,
-        height: (space.y + space.height) - (y + item.height),
+        height: spaceEndY - itemEndY,
         width: space.width
       });
     }
     
     // Space in front of the item (along z-axis/width)
-    if (z + item.width < space.z + space.width) {
+    if (itemEndZ < spaceEndZ) {
       possibleSpaces.push({
         x: space.x,
         y: space.y,
-        z: z + item.width,
+        z: itemEndZ,
         length: space.length,
         height: space.height,
-        width: (space.z + space.width) - (z + item.width)
+        width: spaceEndZ - itemEndZ
       });
     }
     
@@ -440,23 +455,113 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
       });
     }
     
+    // 2. MAXIMAL SPACES (creates more optimal spaces that maximize usage)
+    
+    // Right-top space (between right edge of item and right edge of space, from top of item to top of space)
+    if (itemEndX < spaceEndX && itemEndY < spaceEndY) {
+      possibleSpaces.push({
+        x: itemEndX,
+        y: itemEndY,
+        z: space.z,
+        length: spaceEndX - itemEndX,
+        height: spaceEndY - itemEndY,
+        width: space.width
+      });
+    }
+    
+    // Right-front space
+    if (itemEndX < spaceEndX && itemEndZ < spaceEndZ) {
+      possibleSpaces.push({
+        x: itemEndX,
+        y: space.y,
+        z: itemEndZ,
+        length: spaceEndX - itemEndX,
+        height: space.height,
+        width: spaceEndZ - itemEndZ
+      });
+    }
+    
+    // Top-front space
+    if (itemEndY < spaceEndY && itemEndZ < spaceEndZ) {
+      possibleSpaces.push({
+        x: space.x,
+        y: itemEndY,
+        z: itemEndZ,
+        length: space.length,
+        height: spaceEndY - itemEndY,
+        width: spaceEndZ - itemEndZ
+      });
+    }
+    
+    // Corner space (right-top-front)
+    if (itemEndX < spaceEndX && itemEndY < spaceEndY && itemEndZ < spaceEndZ) {
+      possibleSpaces.push({
+        x: itemEndX,
+        y: itemEndY,
+        z: itemEndZ,
+        length: spaceEndX - itemEndX,
+        height: spaceEndY - itemEndY,
+        width: spaceEndZ - itemEndZ
+      });
+    }
+    
     // Filter out spaces that are too small to be useful
-    const minDimension = 0.1; // Minimum useful dimension in units
-    const filteredSpaces = possibleSpaces.filter(space => 
+    const usableSpaces = possibleSpaces.filter(space => 
       space.length >= minDimension && 
       space.height >= minDimension && 
       space.width >= minDimension
     );
     
-    return filteredSpaces;
+    // Sort spaces by potential for maximizing volume usage
+    const sortedSpaces = [...usableSpaces].sort((a, b) => {
+      // Calculate volume of each space
+      const volumeA = a.length * a.height * a.width;
+      const volumeB = b.length * b.height * b.width;
+      
+      // Calculate compactness of each space (closer to a cube is better)
+      const maxDimA = Math.max(a.length, a.height, a.width);
+      const minDimA = Math.min(a.length, a.height, a.width);
+      const compactnessA = minDimA / maxDimA;
+      
+      const maxDimB = Math.max(b.length, b.height, b.width);
+      const minDimB = Math.min(b.length, b.height, b.width);
+      const compactnessB = minDimB / maxDimB;
+      
+      // Use a weighted score that considers both volume and compactness
+      const scoreA = volumeA * (0.7 + 0.3 * compactnessA);
+      const scoreB = volumeB * (0.7 + 0.3 * compactnessB);
+      
+      return scoreB - scoreA; // Sort in descending order
+    });
+    
+    // Take only the top spaces (to prevent too many small spaces)
+    const MAX_SPACES = 10;
+    return sortedSpaces.slice(0, MAX_SPACES);
   };
   
-  // Check if an item fits in a space
+  // Check if an item fits in a space with strict boundary checking
   const itemFitsInSpace = (item: CargoItem, space: Space): boolean => {
+    // First validate that the space itself is within container boundaries
+    const isSpaceValid = (
+      space.x >= 0 && 
+      space.y >= 0 && 
+      space.z >= 0 && 
+      space.x + space.length <= containerLength && 
+      space.y + space.height <= containerHeight && 
+      space.z + space.width <= containerWidth
+    );
+    
+    // If space extends outside container, it's invalid
+    if (!isSpaceValid) {
+      return false;
+    }
+    
+    // Then check if item fits within the space with a small safety margin
+    // Small margin (0.01) to account for floating point precision
     return (
-      item.length <= space.length &&
-      item.height <= space.height &&
-      item.width <= space.width
+      item.length <= space.length - 0.01 &&
+      item.height <= space.height - 0.01 &&
+      item.width <= space.width - 0.01
     );
   };
   
@@ -648,29 +753,49 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
         
         // Calculate contact area score (normalized)
         const contactArea = calculateContactArea(item, pos, packedItems);
-        const maxPossibleContact = 2 * (item.length * item.width + item.length * item.height + item.width * item.height);
-        const contactScore = contactArea / maxPossibleContact;
+        const maxPossibleContactArea = 2 * item.length * item.width + 
+                                       2 * item.length * item.height + 
+                                       2 * item.width * item.height;
+        const contactScore = Math.min(1, contactArea / (maxPossibleContactArea * 0.5));
         
-        // Calculate height score (lower is better for stability)
-        const heightScore = 1 - (pos.y / containerHeight);
+        // Height score (lower is better, normalized to 0-1)
+        const heightScore = 1 - Math.min(1, pos.y / containerHeight);
         
-        // Calculate torque score
-        const tempItem: PackedItem = {
-          ...item,
-          position: pos,
-          rotation: { x: 0, y: 0, z: 0 }
-        };
+        // Score based on distance from ideal center of gravity
+        const tempItem = { ...item, position: pos, rotation: { x: 0, y: 0, z: 0 } };
         const tempPackedItems = [...packedItems, tempItem];
         const cog = calculateCenterOfGravity(tempPackedItems);
         const torque = calculateTorque(tempPackedItems, cog);
-        const totalWeight = tempPackedItems.reduce((sum, item) => sum + item.weight, 0);
-        const maxAcceptableTorque = totalWeight * MAX_ACCEPTABLE_TORQUE_RATIO;
+        const totalTempWeight = tempPackedItems.reduce((sum, item) => sum + item.weight, 0);
+        const maxAcceptableTorque = totalTempWeight * MAX_ACCEPTABLE_TORQUE_RATIO;
         const torqueScore = 1 - Math.min(1, torque / maxAcceptableTorque);
         
-        // Final score: combination of all factors
-        // 30% weight on balance, 20% on height, 20% on torque, 30% on contact
-        const score = 0.3 * stabilityScore + 0.2 * heightScore + 0.2 * torqueScore + 0.3 * contactScore;
+        // Calculate space utilization score (new) - how well this position fills available space
+        const spaceUtilizationScore = 1 - (Math.max(0,
+          (currentSpace.length - item.length) * (currentSpace.width - item.width)
+        ) / (currentSpace.length * currentSpace.width));
         
+        // Calculate corner/edge alignment score (new) - rewards placing items against walls/corners
+        const isAgainstLeftWall = pos.x === 0;
+        const isAgainstRightWall = pos.x + item.length >= containerLength - 0.01;
+        const isAgainstFrontWall = pos.z === 0;
+        const isAgainstBackWall = pos.z + item.width >= containerWidth - 0.01;
+        const wallCount = [isAgainstLeftWall, isAgainstRightWall, isAgainstFrontWall, isAgainstBackWall].filter(Boolean).length;
+        const cornerScore = wallCount / 4; // Normalized 0-1 based on how many walls it touches
+        
+        // Calculate packed item adjacency score (new) - rewards placing items close to others
+        const adjacencyScore = Math.min(1, contactArea / (item.length * item.width * 0.5));
+        
+        // Final score: enhanced weighting for tighter packing
+        // 25% stability, 15% height, 15% torque, 15% contact, 15% space utilization, 10% corners, 5% adjacency
+        const score = 0.25 * stabilityScore + 
+                     0.15 * heightScore + 
+                     0.15 * torqueScore + 
+                     0.15 * contactScore + 
+                     0.15 * spaceUtilizationScore + 
+                     0.10 * cornerScore + 
+                     0.05 * adjacencyScore;
+                     
         return { pos, score, spaceIndex: pos.space };
       });
       
@@ -721,9 +846,84 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
       break;
     }
     
-    // If item couldn't be packed, add to unpacked items
+    // If item couldn't be packed with physics constraints, try a fallback with relaxed constraints
     if (!packed) {
-      unpackedItems.push(item);
+      // Fallback mechanism: Try again with more relaxed constraints
+      for (let j = 0; j < spaces.length; j++) {
+        const currentSpace = spaces[j];
+        
+        // Check if item fits in this space (basic check)
+        if (item.length <= currentSpace.length && 
+            item.height <= currentSpace.height && 
+            item.width <= currentSpace.width) {
+          
+          // Try to place at the bottom of the space
+          const x = currentSpace.x;
+          const y = currentSpace.y;
+          const z = currentSpace.z;
+          
+          // Check for basic overlap with existing items
+          let hasOverlap = false;
+          for (const packedItem of packedItems) {
+            // Check for overlap in all three dimensions
+            const overlapX = Math.max(0, 
+              Math.min(x + item.length, packedItem.position.x + packedItem.length) - 
+              Math.max(x, packedItem.position.x));
+              
+            const overlapY = Math.max(0, 
+              Math.min(y + item.height, packedItem.position.y + packedItem.height) - 
+              Math.max(y, packedItem.position.y));
+              
+            const overlapZ = Math.max(0, 
+              Math.min(z + item.width, packedItem.position.z + packedItem.width) - 
+              Math.max(z, packedItem.position.z));
+            
+            if (overlapX > 0 && overlapY > 0 && overlapZ > 0) {
+              hasOverlap = true;
+              break;
+            }
+          }
+          
+          if (!hasOverlap) {
+            console.log(`Placed item ${item.id} using fallback mechanism (relaxed constraints)`);
+            
+            // Add to packed items
+            packedItems.push({
+              id: item.id,
+              name: item.name,
+              width: item.width,
+              height: item.height,
+              length: item.length,
+              weight: item.weight,
+              color: item.color,
+              quantity: item.quantity,
+              constraints: item.constraints,
+              position: { x, y, z },
+              rotation: { x: 0, y: 0, z: 0 }
+            });
+            
+            // Update totals
+            const itemVolume = item.width * item.height * item.length;
+            totalVolumePacked += itemVolume;
+            totalWeight += item.weight;
+            
+            // Split the space and get new spaces
+            const newSpaces = splitSpace(currentSpace, item, x, y, z);
+            
+            // Remove the used space and add new spaces
+            spaces.splice(j, 1);
+            spaces.push(...newSpaces);
+            
+            packed = true;
+            break;
+          }
+        }
+      }
+      
+      // If still not packed after fallback, add to unpacked items
+      if (!packed) {
+        unpackedItems.push(item);
+      }
     }
   }
   

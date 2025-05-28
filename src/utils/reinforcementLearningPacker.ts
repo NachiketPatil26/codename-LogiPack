@@ -12,8 +12,14 @@ import DeepPack3DModelImport from '../../public/models/bin_packing_model/DeepPac
 // Create a singleton instance of the model with proper typing
 const deepPackModel: IDeepPack3DModel = new (DeepPack3DModelImport as any)();
 
-// Flask server URL for model predictions
+// Flask server URL for model predictions - this is the pre-trained model server
 const MODEL_SERVER_URL = 'http://localhost:5001';
+
+// Debug flag to track packing process
+const DEBUG_PACKING = true;
+
+// Preference flags for model usage
+const USE_PRETRAINED_MODEL = true; // Set to true to prioritize the pre-trained model
 
 // Define interfaces for the bin packing model
 interface Position {
@@ -264,8 +270,8 @@ const generateValidActions = (item: CargoItem, packedItems: PackedItem[], contai
   return validActions;
 };
 
-// Helper function to calculate stability score (0-1)
-const calculateStabilityScore = (position: Position, rotation: Rotation, packedItems: PackedItem[], container: Container): number => {
+// Helper function to calculate stability score (0-1) with stricter requirements
+const calculateStabilityScore = (position: Position, rotation: Rotation, packedItems: PackedItem[]): number => {
   // If the item is on the ground, it's fully supported
   if (position.y === 0) {
     return 1.0;
@@ -279,17 +285,31 @@ const calculateStabilityScore = (position: Position, rotation: Rotation, packedI
     return 0.0;
   }
   
+  if (DEBUG_PACKING) console.log(`[RL PACKER] Checking stability for item at (${position.x}, ${position.y}, ${position.z}) - L:${rotation.length}, W:${rotation.width}, H:${rotation.height}`);
+  
   // Calculate how much of the bottom face is supported by other items
   let supportedArea = 0;
-  const SUPPORT_THRESHOLD = 0.001; // Small threshold to account for floating point errors
+  let maxSupportHeight = 0;
+  let supportingItems = 0;
   
+  // Check each packed item to see if it supports this item
   for (const packedItem of packedItems) {
-    // Only consider items that are directly below this one (with a small tolerance)
-    if (Math.abs(packedItem.position.y + packedItem.rotation.height - position.y) > SUPPORT_THRESHOLD) {
+    // More lenient check - items that are within 0.5 units of expected height
+    // This helps with floating point imprecision
+    const supportTolerance = 0.5; // 5mm tolerance for support
+    
+    // Calculate the top of the potential supporting item
+    const supportingItemTop = packedItem.position.y + packedItem.rotation.height;
+    
+    // Check if the packed item is at the right height to provide support
+    const isAtSupportHeight = Math.abs(supportingItemTop - position.y) <= supportTolerance;
+    
+    if (!isAtSupportHeight) {
+      if (DEBUG_PACKING) console.log(`[RL PACKER] Item at Y=${supportingItemTop} not close enough to current item base at Y=${position.y}`);
       continue;
     }
     
-    // Calculate overlap in the XZ plane
+    // Calculate the overlapping area
     const overlapX = Math.max(0, 
       Math.min(position.x + rotation.length, packedItem.position.x + packedItem.rotation.length) - 
       Math.max(position.x, packedItem.position.x));
@@ -298,21 +318,64 @@ const calculateStabilityScore = (position: Position, rotation: Rotation, packedI
       Math.min(position.z + rotation.width, packedItem.position.z + packedItem.rotation.width) - 
       Math.max(position.z, packedItem.position.z));
       
-    // Add the overlapping area to the supported area
-    supportedArea += overlapX * overlapZ;
+    // Only count if there's actual overlap in both dimensions
+    if (overlapX > 0 && overlapZ > 0) {
+      // Add the overlapping area to the supported area
+      const itemSupportArea = overlapX * overlapZ;
+      supportedArea += itemSupportArea;
+      maxSupportHeight = Math.max(maxSupportHeight, supportingItemTop);
+      supportingItems++;
+      
+      if (DEBUG_PACKING) console.log(`[RL PACKER] Found supporting item: overlap area = ${itemSupportArea.toFixed(2)} units²`);
+    }
   }
   
   // Calculate the percentage of the bottom face that is supported
   const supportPercentage = supportedArea / bottomFaceArea;
   
-  // Log support percentage for debugging
-  if (supportPercentage < 0.7) {
-    console.log('Item has partial support in RL packer:', supportPercentage);
+  // Even more lenient stability requirements for the reinforcement learning packer
+  // 1. For the first item, almost no support is required (just to get started)
+  // 2. For small items, 30% support is sufficient
+  // 3. For larger items, 40% support is required or at least 2 supporting items
+  // 4. Progressive thresholds based on packing progress
+  
+  const isFirstItem = packedItems.length === 0;
+  const isSecondItem = packedItems.length === 1;
+  const isEarlyStage = packedItems.length < 3;
+  const isLargeItem = bottomFaceArea > 400; // Consider items with area > 400 sq cm as large
+  
+  // Progressive stability requirements - much more lenient now
+  let stabilityThreshold = 0.4; // Default 40% support required (down from 50%)
+  
+  // Very lenient for early items to start the packing process
+  if (isFirstItem) stabilityThreshold = 0.01; // Almost no support for first item
+  else if (isSecondItem) stabilityThreshold = 0.2; // 20% for second item
+  else if (isEarlyStage) stabilityThreshold = 0.3; // 30% for early stage
+  else if (!isLargeItem) stabilityThreshold = 0.3; // 30% for small items
+  
+  // Additional debug information
+  if (DEBUG_PACKING) {
+    console.log(`[RL PACKER] Stability analysis: ${supportPercentage.toFixed(4)} (${supportedArea.toFixed(2)}/${bottomFaceArea.toFixed(2)} supported)`);
+    console.log(`[RL PACKER] Supporting items: ${supportingItems}, Required threshold: ${stabilityThreshold}`);
   }
   
-  // Return a scaled score based on support percentage
-  // Even items with low support get a non-zero score to allow placement
-  return Math.max(0.1, supportPercentage);
+  // For very little support, return 0
+  if (supportPercentage < 0.1) {
+    if (DEBUG_PACKING) console.log(`[RL PACKER] Extremely low stability (${supportPercentage.toFixed(2)}), failing stability check`);
+    return 0.0;
+  }
+  
+  // For larger items, require at least 2 supporting points unless first few items
+  const hasEnoughSupports = !isLargeItem || supportingItems >= 2 || isFirstItem || isSecondItem;
+  
+  // If doesn't meet threshold, return low score but not zero to allow fallbacks
+  if (supportPercentage < stabilityThreshold || !hasEnoughSupports) {
+    if (DEBUG_PACKING) console.log(`[RL PACKER] Below stability threshold (${supportPercentage.toFixed(2)} < ${stabilityThreshold}), returning low score`);
+    return 0.2; // Low score but not zero to allow fallbacks
+  }
+  
+  // Normalize the score between 0.5 and 1.0 based on support percentage
+  return 0.5 + (supportPercentage * 0.5);
 };
 
 // Helper function to calculate space utilization score (0-1)
@@ -396,25 +459,44 @@ const calculateCompactnessScore = (position: Position, rotation: Rotation, packe
   return 1 - Math.min(1, avgDistance / (containerDiagonal / 2));
 };
 
-// Helper functions for model input preparation
-// Helper functions for model input preparation with boundary checking
+// Helper functions for model input preparation with improved precision
+// Increased grid size for better resolution and more accurate height mapping
 function createHeightMap(container: Container, packedItems: PackedItem[]): number[][] {
-  // Create a 32x32 grid representing the height at each position
-  const gridSize = 32;
+  // Create a 64x64 grid representing the height at each position for better precision
+  const gridSize = 64;
   const heightMap = Array(gridSize).fill(0).map(() => Array(gridSize).fill(0));
   
-  // Fill height map based on packed items
+  // Fill height map based on packed items with improved precision
   packedItems.forEach(item => {
+    // Calculate grid coordinates with better precision
     const x = Math.floor((item.position.x / container.length) * gridSize);
     const z = Math.floor((item.position.z / container.width) * gridSize);
     const width = Math.ceil((item.rotation.length / container.length) * gridSize);
     const depth = Math.ceil((item.rotation.width / container.width) * gridSize);
     const height = item.position.y + item.rotation.height;
     
-    for (let i = x; i < x + width && i < gridSize; i++) {
-      for (let j = z; j < z + depth && j < gridSize; j++) {
-        if (i >= 0 && j >= 0 && i < gridSize && j < gridSize) {
+    // Add height information with anti-aliasing for smoother transitions
+    for (let i = Math.max(0, x-1); i < Math.min(gridSize, x + width + 1); i++) {
+      for (let j = Math.max(0, z-1); j < Math.min(gridSize, z + depth + 1); j++) {
+        // Core area gets full height
+        if (i >= x && i < x + width && j >= z && j < z + depth) {
           heightMap[j][i] = Math.max(heightMap[j][i], height / container.height);
+        } 
+        // Border areas get gradient for smoother transitions
+        else {
+          // Calculate distance from border (0 = on border, 1 = one cell away)
+          const borderDist = Math.min(
+            Math.abs(i - x), 
+            Math.abs(i - (x + width - 1)),
+            Math.abs(j - z),
+            Math.abs(j - (z + depth - 1))
+          );
+          
+          // Apply gradient based on distance (closer = higher value)
+          if (borderDist <= 1) {
+            const gradientHeight = (height / container.height) * (1 - borderDist * 0.8);
+            heightMap[j][i] = Math.max(heightMap[j][i], gradientHeight);
+          }
         }
       }
     }
@@ -433,15 +515,19 @@ function createActionMap(container: Container, position: Position, rotation: Rot
     // Return a copy of the height map as fallback
     return JSON.parse(JSON.stringify(heightMap));
   }
-  const gridSize = 32;
-  const actionMap = JSON.parse(JSON.stringify(heightMap)); // Deep copy
+
+  // Use same grid size as heightMap for consistency
+  const gridSize = heightMap.length;
+  const actionMap = JSON.parse(JSON.stringify(heightMap));
   
+  // Calculate grid coordinates with consistent scaling
   const x = Math.floor((position.x / container.length) * gridSize);
   const z = Math.floor((position.z / container.width) * gridSize);
   const width = Math.ceil((rotation.length / container.length) * gridSize);
   const depth = Math.ceil((rotation.width / container.width) * gridSize);
   const height = (position.y + rotation.height) / container.height;
   
+  // Mark the action area with the height value
   for (let i = x; i < x + width && i < gridSize; i++) {
     for (let j = z; j < z + depth && j < gridSize; j++) {
       if (i >= 0 && j >= 0 && i < gridSize && j < gridSize) {
@@ -450,30 +536,182 @@ function createActionMap(container: Container, position: Position, rotation: Rot
     }
   }
   
+  // Add gradient information for better positioning cues
+  const gradient = 0.05; // Subtle gradient to help with positioning
+  for (let i = 0; i < gridSize; i++) {
+    for (let j = 0; j < gridSize; j++) {
+      // Skip cells that are part of the action area
+      if (i >= x && i < x + width && j >= z && j < z + depth) {
+        continue;
+      }
+      
+      // Calculate distance from action center
+      const centerX = x + width/2;
+      const centerZ = z + depth/2;
+      const distance = Math.sqrt(Math.pow(i - centerX, 2) + Math.pow(j - centerZ, 2));
+      
+      // Apply subtle gradient (closer = higher value)
+      const gradientValue = Math.max(0, gradient - (distance / gridSize) * gradient);
+      
+      // Only add gradient to empty or lower cells
+      if (actionMap[j][i] < height - 0.01) {
+        actionMap[j][i] += gradientValue;
+      }
+    }
+  }
+  
   return actionMap;
 }
+
+// Create a more informative constraint map that provides meaningful container constraints
+function createConstraintMap(container: Container, packedItems: PackedItem[]): number[][] {
+  const gridSize = 64; // Same as heightMap for consistency
+  const constMap = Array(gridSize).fill(0).map(() => Array(gridSize).fill(1)); // Initialize with 1 (available space)
+  
+  // Mark container boundaries with special values
+  for (let i = 0; i < gridSize; i++) {
+    for (let j = 0; j < gridSize; j++) {
+      // Mark edges of container
+      if (i === 0 || j === 0 || i === gridSize-1 || j === gridSize-1) {
+        constMap[j][i] = 0.8; // Boundary marker
+      }
+    }
+  }
+  
+  // Mark occupied areas with packed items (top-down view)
+  packedItems.forEach(item => {
+    const x = Math.floor((item.position.x / container.length) * gridSize);
+    const z = Math.floor((item.position.z / container.width) * gridSize);
+    const width = Math.ceil((item.rotation.length / container.length) * gridSize);
+    const depth = Math.ceil((item.rotation.width / container.width) * gridSize);
+    
+    for (let i = x; i < x + width && i < gridSize; i++) {
+      for (let j = z; j < z + depth && j < gridSize; j++) {
+        if (i >= 0 && j >= 0 && i < gridSize && j < gridSize) {
+          constMap[j][i] = 0.2; // Occupied space marker
+        }
+      }
+    }
+  });
+  
+  // Add center of gravity information
+  if (packedItems.length > 0) {
+    // Calculate current center of gravity
+    let totalWeight = 0;
+    let weightedX = 0;
+    let weightedZ = 0;
+    
+    packedItems.forEach(item => {
+      const itemCenterX = item.position.x + item.rotation.length/2;
+      const itemCenterZ = item.position.z + item.rotation.width/2;
+      weightedX += itemCenterX * item.weight;
+      weightedZ += itemCenterZ * item.weight;
+      totalWeight += item.weight;
+    });
+    
+    const cogX = weightedX / totalWeight / container.length;
+    const cogZ = weightedZ / totalWeight / container.width;
+    
+    // Add gradient based on distance from center of gravity
+    for (let i = 0; i < gridSize; i++) {
+      for (let j = 0; j < gridSize; j++) {
+        // Skip occupied spaces
+        if (constMap[j][i] === 0.2) continue;
+        
+        // Calculate normalized coordinates
+        const normX = i / gridSize;
+        const normZ = j / gridSize;
+        
+        // Distance from center of gravity (normalized 0-1)
+        const distance = Math.sqrt(Math.pow(normX - cogX, 2) + Math.pow(normZ - cogZ, 2));
+        
+        // Apply subtle gradient (further from COG = lower value)
+        constMap[j][i] -= Math.min(0.15, distance * 0.3);
+      }
+    }
+  }
+  
+  return constMap;
+}
+
+// Helper function to refine position by lowering items as much as possible (gravity effect)
+const refinePosition = (position: Position, rotation: Rotation, packedItems: PackedItem[]): Position => {
+  // If already on the ground, no need to refine
+  if (position.y === 0) {
+    return {
+      x: Math.round(position.x * 100) / 100, // Round to 2 decimal places for precision
+      y: 0,
+      z: Math.round(position.z * 100) / 100
+    };
+  }
+  
+  // Find highest point below this position
+  let highestPointBelow = 0;
+  
+  for (const item of packedItems) {
+    // Check if item is below our position
+    const overlapX = Math.max(0, 
+      Math.min(position.x + rotation.length, item.position.x + item.rotation.length) - 
+      Math.max(position.x, item.position.x));
+    
+    const overlapZ = Math.max(0, 
+      Math.min(position.z + rotation.width, item.position.z + item.rotation.width) - 
+      Math.max(position.z, item.position.z));
+    
+    // If there's significant overlap in the XZ plane (at least 20% of the smaller dimension)
+    // and the item is below, check its height
+    const minItemDimension = Math.min(rotation.length, rotation.width);
+    const minSupportItemDimension = Math.min(item.rotation.length, item.rotation.width);
+    const minDimension = Math.min(minItemDimension, minSupportItemDimension);
+    const significantOverlap = (overlapX * overlapZ) > (0.2 * minDimension * minDimension);
+    
+    if (overlapX > 0 && overlapZ > 0 && significantOverlap) {
+      const itemTopY = item.position.y + item.rotation.height;
+      if (itemTopY < position.y && itemTopY > highestPointBelow) {
+        highestPointBelow = itemTopY;
+      }
+    }
+  }
+  
+  // Apply a small offset to prevent z-fighting in visualization (0.01 units)
+  const VISUAL_OFFSET = 0.01;
+  
+  // Return refined position with item at the highest point below, with precision rounding
+  return { 
+    x: Math.round(position.x * 100) / 100, 
+    y: Math.round((highestPointBelow + VISUAL_OFFSET) * 100) / 100,
+    z: Math.round(position.z * 100) / 100 
+  };
+};
 
 function createItemMap(remainingItems: CargoItem[], container: Container): number[][] {
   if (!remainingItems || remainingItems.length === 0) {
     // Return empty item map if no items
-    return Array(4).fill(0).map(() => Array(3).fill(0));
+    return Array(4).fill(0).map(() => Array(5).fill(0));
   }
   // Take up to 4 items (k=5 means current item + 4 future items)
   const items = remainingItems.slice(0, 4);
   
   // Normalize dimensions
   const maxDim = Math.max(container.length, container.width, container.height);
+  const maxWeight = container.maxWeight || 1000; // Fallback if maxWeight not specified
+  const containerVolume = container.length * container.width * container.height;
   
-  // Create item map with normalized dimensions
-  const itemMap = items.map(item => [
-    item.length / maxDim,
-    item.height / maxDim,
-    item.width / maxDim
-  ]);
+  // Create enhanced item map with normalized dimensions and additional features
+  const itemMap = items.map(item => {
+    const volume = item.length * item.width * item.height;
+    return [
+      item.length / maxDim,                  // Normalized length
+      item.height / maxDim,                  // Normalized height
+      item.width / maxDim,                   // Normalized width
+      item.weight / maxWeight,               // Normalized weight
+      volume / containerVolume               // Normalized volume
+    ];
+  });
   
   // Pad with zeros if less than 4 items
   while (itemMap.length < 4) {
-    itemMap.push([0, 0, 0]);
+    itemMap.push([0, 0, 0, 0, 0]);
   }
   
   return itemMap;
@@ -489,17 +727,27 @@ const reinforcementLearningPacker = async (
   
   // Load the JavaScript model
   let modelLoaded = false;
-  try {
-    console.log('Loading DeepPack3D model...');
-    modelLoaded = await deepPackModel.loadModel();
-    if (modelLoaded) {
-      console.log('DeepPack3D model loaded successfully');
-    } else {
-      console.warn('Failed to load DeepPack3D model, falling back to heuristic approach');
+  // Determine if we should attempt to use the local model at all
+  let attemptLocalModel = !USE_PRETRAINED_MODEL;
+  
+  // Try loading the local model only if we're not prioritizing the pre-trained model
+  if (attemptLocalModel) {
+    try {
+      console.log('[RL PACKER] Loading local DeepPack3D JavaScript model...');
+      modelLoaded = await deepPackModel.loadModel();
+      if (modelLoaded) {
+        console.log('[RL PACKER] Local DeepPack3D model loaded successfully ✅');
+      } else {
+        console.warn('[RL PACKER] Failed to load local DeepPack3D model, will use Flask server (pre-trained model) ⚠️');
+      }
+    } catch (error) {
+      console.error('[RL PACKER] Error loading local DeepPack3D model:', error);
+      console.warn('[RL PACKER] Will use Flask server (pre-trained model) ⚠️');
+      modelLoaded = false;
     }
-  } catch (error) {
-    console.error('Error loading DeepPack3D model:', error);
-    console.warn('Falling back to heuristic approach');
+  } else {
+    console.log('[RL PACKER] Configured to prioritize pre-trained model via Flask server');
+    modelLoaded = false; // Ensure we don't use the local model
   }
   
   // Initialize state
@@ -542,17 +790,195 @@ const reinforcementLearningPacker = async (
       
       // First try to use the Flask server
       try {
-        // Try to use the JavaScript model if loaded
+        console.log(`[RL PACKER] Packing item ${currentItem.name} (${currentItem.length}x${currentItem.width}x${currentItem.height})`);
+        
+        // Always try Flask server (pre-trained model) first if configured to do so
+        if (USE_PRETRAINED_MODEL) {
+          console.log('[RL PACKER] Prioritizing pre-trained model via Flask server');
+          try {
+            // Enhanced request with more action candidates for the pre-trained model
+            // Create a set of action maps for different candidate positions
+            const actionMaps = [];
+            const numActionCandidates = Math.min(5, validActions.length);
+            
+            for (let i = 0; i < numActionCandidates; i++) {
+              actionMaps.push(
+                createActionMap(
+                  container, 
+                  validActions[i].position, 
+                  validActions[i].rotation, 
+                  createHeightMap(container, packedItems)
+                )
+              );
+            }
+            
+            // Create a single height map for the current state
+            const heightMap = createHeightMap(container, packedItems);
+            
+            // Send to Flask server with enhanced request
+            console.log(`[RL PACKER] Sending request to Flask server with ${numActionCandidates} action candidates`);
+            const response = await fetch(`${MODEL_SERVER_URL}/predict`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                const_in: [Array(32).fill(0).map(() => Array(32).fill(1))],
+                hmap_in: [heightMap],
+                amap_in: actionMaps,
+                imap_in: [createItemMap(remainingItems, container)],
+                num_candidates: numActionCandidates
+              })
+            });
+            
+            if (!response.ok) {
+              throw new Error(`Server responded with status: ${response.status}`);
+            }
+            console.log('[RL PACKER] Successfully connected to Flask server ✅');
+            
+            const data = await response.json();
+            if (data.status === 'success') {
+              console.log('[RL PACKER] Successfully received prediction from pre-trained model ✅');
+              
+              // CRITICAL FIX: Force items to be placed on the ground for the first few items
+              // This ensures we have a stable base to build upon
+              if (packedItems.length < 2) {
+                console.log('[RL PACKER] Ensuring first items are placed on the ground for stability');
+                // Find a valid position on the ground
+                for (let i = 0; i < validActions.length; i++) {
+                  if (validActions[i].position.y === 0) {
+                    bestAction = validActions[i];
+                    console.log(`[RL PACKER] Selected ground position: (${bestAction.position.x}, 0, ${bestAction.position.z})`);
+                    break;
+                  }
+                }
+                
+                // If no ground position found, use the first valid action but force y=0
+                if (!bestAction && validActions.length > 0) {
+                  bestAction = {
+                    ...validActions[0],
+                    position: {...validActions[0].position, y: 0}
+                  };
+                  console.log('[RL PACKER] Forced first item to ground level');
+                }
+                
+                // CRITICAL: Immediately apply this action to pack the item
+                if (bestAction) {
+                  const { position, rotation } = bestAction;
+                  
+                  // Create packed item
+                  const packedItem: PackedItem = {
+                    ...currentItem,
+                    position: position,
+                    rotation: rotation,
+                    color: currentItem.color || getRandomColor()
+                  };
+                  
+                  // Update state
+                  packedItems.push(packedItem);
+                  remainingItems.shift();
+                  totalVolume += rotation.length * rotation.width * rotation.height;
+                  totalWeight += currentItem.weight;
+                  
+                  console.log(`[RL PACKER] Successfully packed first item ${currentItem.name} at (${position.x}, ${position.y}, ${position.z})`);
+                  // Skip the rest of the loop for this item
+                  continue;
+                }
+              } else {
+                // For subsequent items, use the model prediction
+                console.log('[RL PACKER] Using model prediction for placement');
+                
+                // Check if we have predictions in the response
+                if (data.prediction && Array.isArray(data.prediction) && data.prediction.length > 0) {
+                  // The prediction contains Q-values for each action candidate
+                  const qValues = data.prediction;
+                  console.log('[RL PACKER] Q-values received:', qValues);
+                  
+                  // Find the action with the highest Q-value
+                  let bestIndex = 0;
+                  let bestQValue = qValues[0];
+                  
+                  for (let i = 1; i < qValues.length && i < validActions.length; i++) {
+                    if (qValues[i] > bestQValue) {
+                      bestQValue = qValues[i];
+                      bestIndex = i;
+                    }
+                  }
+                  
+                  // Select the best action based on the model's prediction
+                  bestAction = validActions[bestIndex];
+                  console.log(`[RL PACKER] Selected action ${bestIndex} with Q-value ${bestQValue.toFixed(4)}`);
+                  console.log(`[RL PACKER] Position: (${bestAction.position.x}, ${bestAction.position.y}, ${bestAction.position.z})`);
+                } else {
+                  // Fallback if no prediction data
+                  console.warn('[RL PACKER] No valid prediction data, using first valid action');
+                  bestAction = validActions[0];
+                }
+              }
+              
+              // Additional validation of the selected position
+              if (bestAction) {
+                const position = bestAction.position;
+                const rotation = bestAction.rotation;
+                
+                // Verify the position is valid
+                const isValid = position.x >= 0 && 
+                               position.y >= 0 && 
+                               position.z >= 0 && 
+                               position.x + rotation.length <= container.length && 
+                               position.y + rotation.height <= container.height && 
+                               position.z + rotation.width <= container.width;
+                
+                console.log(`[RL PACKER] Final position validity check: ${isValid ? 'VALID ✅' : 'INVALID ❌'}`);
+                
+                if (!isValid) {
+                  // Find a safe fallback position
+                  console.warn('[RL PACKER] Selected position is invalid, finding fallback...');
+                  for (const action of validActions) {
+                    const pos = action.position;
+                    const rot = action.rotation;
+                    if (pos.x >= 0 && pos.y >= 0 && pos.z >= 0 &&
+                        pos.x + rot.length <= container.length &&
+                        pos.y + rot.height <= container.height &&
+                        pos.z + rot.width <= container.width) {
+                      bestAction = action;
+                      console.log('[RL PACKER] Found valid fallback position');
+                      break;
+                    }
+                  }
+                }
+              } else {
+                console.warn('[RL PACKER] No valid actions available for this item!');
+              }
+              
+              // Success with pre-trained model, continue processing with the selected action
+              if (bestAction) {
+                console.log('[RL PACKER] Continuing with action selected by pre-trained model');
+                break; // Exit the model selection loop and continue with the action
+              }
+            } else {
+              throw new Error('Pre-trained model prediction failed');
+            }
+          } catch (serverError) {
+            console.error('[RL PACKER] Error using pre-trained model via Flask server:', serverError);
+            console.warn('[RL PACKER] Falling back to local model or heuristics ⚠️');
+            // Continue to try local model as fallback
+          }
+        }
+        
+        // Try to use the JavaScript model if loaded and either we're not prioritizing
+        // the pre-trained model or the pre-trained model failed
         if (modelLoaded) {
+          console.log('[RL PACKER] Using local JavaScript model for prediction');
           // Score and sort actions
           const scoredActions = validActions.map(action => {
             const { position, rotation } = action;
-            const stabilityScore = calculateStabilityScore(position, rotation, packedItems, container);
+            const stabilityScore = calculateStabilityScore(position, rotation, packedItems);
             const spaceUtilizationScore = calculateSpaceUtilizationScore(position, rotation, packedItems, container);
             const compactnessScore = calculateCompactnessScore(position, rotation, packedItems, container);
             
-            // Calculate a base score
-            let score = (0.5 * stabilityScore) + (0.3 * spaceUtilizationScore) + (0.2 * compactnessScore);
+            // Calculate a base score with higher emphasis on stability
+            let score = (0.6 * stabilityScore) + (0.25 * spaceUtilizationScore) + (0.15 * compactnessScore);
             
             // Bonus for ground positions
             if (position.y === 0) score += 0.5;
@@ -592,8 +1018,8 @@ const reinforcementLearningPacker = async (
                 continue;
               }
               
-              // Prepare inputs for the model
-              const constMap = Array(32).fill(0).map(() => Array(32).fill(1));
+              // Prepare inputs for the model with improved constraint map
+              const constMap = createConstraintMap(container, packedItems);
               const heightMap = createHeightMap(container, packedItems);
               const actionMap = createActionMap(container, position, rotation, heightMap);
               const itemMap = createItemMap(remainingItems, container);
@@ -606,8 +1032,22 @@ const reinforcementLearningPacker = async (
                 [itemMap]
               );
               
-              // Combine model prediction with score for more robust decisions
-              const combinedScore = (0.7 * qValue) + (0.3 * score);
+              // Calculate adaptive model weight based on confidence and stability
+              const calculateModelWeight = (modelQValue: number, itemStabilityScore: number): number => {
+                // If model prediction seems strong and stability is good, trust it more
+                if (modelQValue > 0.8 && itemStabilityScore > 0.8) {
+                  return 0.9; // High confidence, heavily weight the model
+                } else if (modelQValue < 0.3 || itemStabilityScore < 0.5) {
+                  return 0.4; // Low confidence or low stability, rely more on heuristics
+                }
+                return 0.7; // Default weight
+              };
+              
+              // Adaptive weighting based on model confidence and stability
+              const modelWeight = calculateModelWeight(qValue, score);
+              const combinedScore = (modelWeight * qValue) + ((1 - modelWeight) * score);
+              
+              console.log(`Item ${currentItem.name} position (${position.x.toFixed(1)},${position.y.toFixed(1)},${position.z.toFixed(1)}) - model:${qValue.toFixed(2)}, score:${score.toFixed(2)}, weight:${modelWeight.toFixed(2)}, combined:${combinedScore.toFixed(2)}`);
               
               if (combinedScore > bestQValue) {
                 bestQValue = combinedScore;
@@ -619,12 +1059,24 @@ const reinforcementLearningPacker = async (
             }
           }
           
-          // If no action was selected by the model, fall back to the best scored action
+          // If no action was selected by the model, fall back to a more intelligent selection
           if (!bestAction && scoredActions.length > 0) {
-            bestAction = scoredActions[0].action;
+            // Don't just take the first action, select most stable one
+            const stableActions = scoredActions
+              .filter(a => calculateStabilityScore(a.action.position, a.action.rotation, packedItems) > 0.7);
+            
+            if (stableActions.length > 0) {
+              console.log(`Using stable fallback position for item ${currentItem.name}`);
+              bestAction = stableActions[0].action;
+            } else if (scoredActions.length > 0) {
+              console.warn(`No stable positions found for item ${currentItem.name}, using best available`);
+              bestAction = scoredActions[0].action;
+            }
           }
+          console.log('[RL PACKER] Successfully used JavaScript model for prediction ✅');
         } else {
           // Try using the Flask server as fallback
+          console.log('[RL PACKER] Local model not available, trying Flask server as fallback...');
           try {
             const response = await fetch(`${MODEL_SERVER_URL}/predict`, {
               method: 'POST',
@@ -643,33 +1095,37 @@ const reinforcementLearningPacker = async (
             if (!response.ok) {
               throw new Error(`Server responded with status: ${response.status}`);
             }
+            console.log('[RL PACKER] Successfully connected to Flask server ✅');
             
             const data = await response.json();
             if (data.status === 'success') {
               // Use the prediction to select the best action
               // For simplicity, we'll just use the first valid action for now
               bestAction = validActions[0];
+              console.log('[RL PACKER] Successfully received prediction from Flask server ✅');
             } else {
               throw new Error('Model prediction failed');
             }
           } catch (serverError) {
-            console.error('Error using Flask server:', serverError);
+            console.error('[RL PACKER] Error using Flask server:', serverError);
+            console.warn('[RL PACKER] Both local model and Flask server failed, falling back to heuristic approach ⚠️');
             throw new Error('Model not loaded and server unavailable');
           }
         }
       } catch (error) {
-        console.error('Error using JavaScript model, falling back to heuristic approach:', error);
+        console.error('[RL PACKER] Error using models, falling back to heuristic approach:', error);
+        console.log('[RL PACKER] USING HEURISTIC FALLBACK - No neural network being used ⚠️');
         // Fall back to heuristic approach
         for (const action of validActions) {
           const { position, rotation } = action;
           
           // Calculate stability score (percentage of bottom face supported)
-          const stabilityScore = calculateStabilityScore(position, rotation, packedItems, container);
+          const stabilityScore = calculateStabilityScore(position, rotation, packedItems);
           
           // Calculate space utilization score
           const spaceUtilizationScore = calculateSpaceUtilizationScore(position, rotation, packedItems, container);
           
-          // Calculate compactness score (how close to other items)
+          // Calculate compactness score
           const compactnessScore = calculateCompactnessScore(position, rotation, packedItems, container);
           
           // Combined score (weighted sum)
@@ -684,27 +1140,33 @@ const reinforcementLearningPacker = async (
       
       // Apply the best action
       if (bestAction) {
+        if (DEBUG_PACKING) console.log(`[RL PACKER] Attempting to pack item ${currentItem.name} using selected action`);
+        
         const { position, rotation } = bestAction;
+        
+        if (DEBUG_PACKING) console.log(`[RL PACKER] Position: (${position.x.toFixed(1)}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)}), Rotation: (L:${rotation.length.toFixed(1)}, W:${rotation.width.toFixed(1)}, H:${rotation.height.toFixed(1)})`);
         
         // Double-check for boundary violations
         if (position.x < 0 || position.y < 0 || position.z < 0 ||
             position.x + rotation.length > container.length ||
             position.y + rotation.height > container.height ||
             position.z + rotation.width > container.width) {
-          console.error('Boundary violation detected before applying action:', position, rotation, container);
+          console.error('[RL PACKER] Boundary violation detected before applying action:', position, rotation, container);
           remainingItems.shift(); // Skip this item
           continue;
         }
         
-        // Check for stability but don't reject items with partial support
-        const stabilityScore = calculateStabilityScore(position, rotation, packedItems, container);
+        if (DEBUG_PACKING) console.log(`[RL PACKER] Boundary check passed`);
+        
+        // Check for stability with stricter requirements
+        const stabilityScore = calculateStabilityScore(position, rotation, packedItems);
         // Only log the stability score for very low support cases
-        if (stabilityScore < 0.2) {
-          console.warn('Item has low stability score but will be placed anyway:', stabilityScore.toFixed(2));
-          
+        if (stabilityScore < 0.5) {
+          console.warn('Item has low stability score:', stabilityScore.toFixed(2));
+        }  
           // For very low support, try to find a better position if possible
           if (stabilityScore < 0.1 && validActions.length > 1) {
-            console.log('Very low support, trying to find a better position...');
+            console.log('[RL PACKER] STABILITY FALLBACK: Very low support detected (score: ' + stabilityScore.toFixed(2) + '), trying to find a better position... ⚠️');
             let betterAction = null;
             let bestSupport = stabilityScore;
             
@@ -714,8 +1176,7 @@ const reinforcementLearningPacker = async (
               const altScore = calculateStabilityScore(
                 altAction.position, 
                 altAction.rotation, 
-                packedItems, 
-                container
+                packedItems
               );
               
               if (altScore > bestSupport) {
@@ -729,11 +1190,12 @@ const reinforcementLearningPacker = async (
             
             // If we found a better position, use it
             if (betterAction && bestSupport > stabilityScore) {
-              console.log(`Found better position with support: ${bestSupport.toFixed(2)}`);
+              console.log(`[RL PACKER] STABILITY FALLBACK: Found better position with support: ${bestSupport.toFixed(2)} ✅`);
               bestAction = betterAction;
+            } else {
+              console.log(`[RL PACKER] STABILITY FALLBACK: No better position found, using original with low stability ⚠️`);
             }
           }
-        }
         
         // Double-check for collisions
         let hasCollision = false;
@@ -765,8 +1227,8 @@ const reinforcementLearningPacker = async (
         // Create packed item
         const packedItem: PackedItem = {
           ...currentItem,
-          position,
-          rotation,
+          position: position,
+          rotation: rotation,
           color: currentItem.color || getRandomColor()
         };
         
@@ -788,13 +1250,22 @@ const reinforcementLearningPacker = async (
       if (bestAction) {
         const { position, rotation } = bestAction;
         
-        // Create packed item
+        // Refine the position to ensure the item sits properly (gravity effect)
+        const refinedPosition = refinePosition(position, rotation, packedItems);
+        
+        // Create packed item with the refined position
         const packedItem: PackedItem = {
           ...currentItem,
-          position,
+          position: refinedPosition,
           rotation,
           color: currentItem.color || getRandomColor()
         };
+        
+        // Verify stability after refinement
+        const finalStability = calculateStabilityScore(refinedPosition, rotation, packedItems);
+        if (finalStability < 0.5) {
+          console.warn(`Warning: Item ${currentItem.name} placed with low stability: ${finalStability.toFixed(2)}`);
+        }
         
         // Update state
         packedItems.push(packedItem);
@@ -808,18 +1279,24 @@ const reinforcementLearningPacker = async (
     }
   }
   
-  // Calculate container fill percentage
+  // Calculate statistics
   const containerVolume = container.length * container.width * container.height;
   const containerFillPercentage = (totalVolume / containerVolume) * 100;
   
-  // Calculate weight capacity percentage
-  const weightCapacityPercentage = container.maxWeight > 0 
-    ? (totalWeight / container.maxWeight) * 100
-    : 0;
+  // Calculate weight capacity utilization
+  const weightCapacityPercentage = container.maxWeight ? (totalWeight / container.maxWeight) * 100 : 0;
   
-  // Return the packing result
+  // Debug the final packing state
+  console.log(`[RL PACKER] Packing complete. Packed ${packedItems.length} items, ${remainingItems.length} items remaining`);
+  console.log(`[RL PACKER] Container fill: ${containerFillPercentage.toFixed(2)}%, Weight: ${totalWeight.toFixed(2)}/${container.maxWeight || 'unlimited'}`);
+  
+  if (packedItems.length === 0) {
+    console.error('[RL PACKER] WARNING: No items were packed! This is likely a bug.');
+  }
+  
+  // Return the result
   return {
-    packedItems,
+    packedItems: packedItems,  // Explicitly name the property to avoid any reference issues
     unpackedItems: remainingItems,
     containerFillPercentage,
     weightCapacityPercentage,
