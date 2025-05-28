@@ -43,7 +43,23 @@ function App() {
   }, []);
 
   const handleAddCargoItem = (item: CargoItem) => {
-    setCargoItems([...cargoItems, { ...item, id: Date.now().toString() }]);
+    // Preserve the ID if it already exists (for CSV imports), otherwise generate a new one
+    const newItem = {
+      ...item,
+      id: item.id || `item-${Date.now()}`
+    };
+    
+    // Log the item being added (for debugging)
+    console.log('Adding cargo item:', newItem);
+    
+    // Check if this item already exists (by ID)
+    const exists = cargoItems.some(existingItem => existingItem.id === newItem.id);
+    if (exists) {
+      console.log('Item already exists, not adding duplicate:', newItem.id);
+      return;
+    }
+    
+    setCargoItems(prevItems => [...prevItems, newItem]);
   };
 
   const handleRemoveCargoItem = (id: string) => {

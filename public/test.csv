@@ -1,0 +1,2 @@
+name,length,width,height,weight,color,quantity,fragile,rotatable
+Test Box,50,40,30,10,#FF5757,1,false,true

@@ -12,9 +12,9 @@ This file tracks the progress of the 20 planned improvements to the Container Lo
 ## Functional Improvements
 
 
-- [ ] **10. Constraint-Based Packing**
-  - [ ] Add support for item-specific constraints (e.g., "this box must be on top")
-  - [ ] Allow specifying load-bearing capacity for fragile items
+- [x] **10. Constraint-Based Packing**
+  - [x] Add support for item-specific constraints (e.g., "this box must be on top")
+  - [x] Allow specifying load-bearing capacity for fragile items
 
 - [ ] **11. Weight Distribution Analysis**
   - [ ] Add visual indicators for weight distribution

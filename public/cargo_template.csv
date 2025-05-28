@@ -1,0 +1,7 @@
+name,length,width,height,weight,color,quantity,fragile,rotatable
+Small Box,50,40,30,10,#FF5757,1,false,true
+Medium Box,80,60,50,25,#5271FF,2,false,true
+Large Box,120,100,80,50,#7ED957,1,false,true
+Fragile Package,60,40,30,5,#FF66C4,1,true,true
+Non-Rotatable Item,90,70,40,30,#00D2D3,1,false,false
+

@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useForm, SubmitHandler, Controller } from 'react-hook-form';
-import { CargoItem } from '../types';
-import { PackagePlus, Trash2, Package, Plus, Palette, Hash, X, ChevronDown } from 'lucide-react';
+import { CargoItem, ConstraintType, ItemConstraint } from '../types';
+import { PackagePlus, Trash2, Package, Plus, Palette, Hash, X, ChevronDown, Upload, AlertTriangle, CheckCircle, AlertCircle } from 'lucide-react';
 
 interface CargoInputProps {
   cargoItems: CargoItem[];
@@ -9,7 +9,10 @@ interface CargoInputProps {
   onRemoveItem: (id: string) => void;
 }
 
-type CargoFormInputs = Omit<CargoItem, 'id'>;
+type CargoFormInputs = Omit<CargoItem, 'id'> & {
+  isFragile?: boolean;
+  isRotatable?: boolean;
+};
 
 // Predefined vibrant colors for cargo items
 const PREDEFINED_COLORS = [
@@ -33,6 +36,8 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
   const [isAdding, setIsAdding] = useState(false);
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [selectedColor, setSelectedColor] = useState(PREDEFINED_COLORS[8]); // Default to neon cyan
+  const [csvImportError, setCsvImportError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   const { 
     register, 
@@ -50,7 +55,9 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
       height: 100,
       weight: 50,
       color: PREDEFINED_COLORS[8], // Neon cyan
-      quantity: 1
+      quantity: 1,
+      isFragile: false,
+      isRotatable: true
     }
   });
 
@@ -66,20 +73,47 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
     // Handle quantity - create multiple items with the same properties
     const quantity = data.quantity || 1;
     
+    // Create constraints array based on checkboxes
+    const constraints: ItemConstraint[] = [];
+    
+    if (data.isFragile) {
+      constraints.push({
+        type: ConstraintType.FRAGILE
+      });
+    }
+    
+    if (!data.isRotatable) {
+      constraints.push({
+        type: ConstraintType.MUST_BE_UPRIGHT
+      });
+    }
+    
     // Create a new cargo item with the current data
-    const newItem = {
-      ...data,
-      color: currentColor // Ensure we use the current color
+    const baseItem = {
+      name: data.name,
+      length: data.length,
+      width: data.width,
+      height: data.height,
+      weight: data.weight,
+      color: currentColor, // Ensure we use the current color
+      quantity: data.quantity,
+      constraints: constraints.length > 0 ? constraints : undefined
     };
     
     // Add the item(s) based on quantity
     if (quantity === 1) {
-      onAddItem(newItem as CargoItem);
+      onAddItem({
+        ...baseItem,
+        id: `item-${Date.now()}`
+      });
     } else {
       // Create multiple items with incrementing names
       for (let i = 0; i < quantity; i++) {
-        const itemName = `${data.name} #${i + 1}`;
-        onAddItem({ ...newItem, name: itemName } as CargoItem);
+        onAddItem({
+          ...baseItem,
+          id: `item-${Date.now()}-${i}`,
+          name: `${data.name} #${i + 1}`
+        });
       }
     }
     
@@ -100,26 +134,213 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
     setSelectedColor(color);
     setShowColorPicker(false);
   };
+  
+  // Handle CSV file import
+  const handleCsvImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    setCsvImportError(null);
+    
+    if (!file) return;
+    
+    // Check file extension
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      setCsvImportError('Please select a CSV file');
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const csvData = e.target?.result as string;
+        
+        // Handle different line endings
+        const lines = csvData
+          .replace(/\r\n/g, '\n')
+          .replace(/\r/g, '\n')
+          .split('\n')
+          .filter(line => line.trim() !== '');
+        
+        console.log('CSV lines:', lines);
+        
+        if (lines.length <= 1) {
+          setCsvImportError('CSV file is empty or contains only headers');
+          return;
+        }
+        
+        // Parse header row
+        const header = lines[0].split(',').map(h => h.toLowerCase().trim());
+        
+        // Check required columns
+        const nameIndex = header.indexOf('name');
+        const lengthIndex = header.indexOf('length');
+        const widthIndex = header.indexOf('width');
+        const heightIndex = header.indexOf('height');
+        const weightIndex = header.indexOf('weight');
+        
+        if (nameIndex === -1 || lengthIndex === -1 || widthIndex === -1 || 
+            heightIndex === -1 || weightIndex === -1) {
+          setCsvImportError('Missing required columns: name, length, width, height, weight');
+          return;
+        }
+        
+        // Optional columns
+        const colorIndex = header.indexOf('color');
+        const quantityIndex = header.indexOf('quantity');
+        const fragileIndex = header.indexOf('fragile');
+        const rotatableIndex = header.indexOf('rotatable');
+        
+        let importCount = 0;
+        const timestamp = Date.now(); // Use a single timestamp for all items in this batch
+        const newItems: CargoItem[] = [];
+        
+        // Process data rows
+        for (let i = 1; i < lines.length; i++) {
+          const values = lines[i].split(',').map(v => v.trim());
+          
+          if (values.length < 5) continue;
+          
+          // Basic values
+          const name = values[nameIndex];
+          const length = parseFloat(values[lengthIndex]);
+          const width = parseFloat(values[widthIndex]);
+          const height = parseFloat(values[heightIndex]);
+          const weight = parseFloat(values[weightIndex]);
+          
+          // Skip invalid entries
+          if (!name || isNaN(length) || isNaN(width) || isNaN(height) || isNaN(weight)) {
+            continue;
+          }
+          
+          // Optional values
+          const color = colorIndex >= 0 && values[colorIndex] ? 
+            values[colorIndex] : 
+            PREDEFINED_COLORS[Math.floor(Math.random() * PREDEFINED_COLORS.length)];
+            
+          const quantity = quantityIndex >= 0 && values[quantityIndex] ? 
+            parseInt(values[quantityIndex]) : 1;
+          
+          // Constraints
+          const constraints: ItemConstraint[] = [];
+          
+          if (fragileIndex >= 0 && values[fragileIndex]?.toLowerCase() === 'true') {
+            constraints.push({ type: ConstraintType.FRAGILE });
+          }
+          
+          if (rotatableIndex >= 0 && values[rotatableIndex]?.toLowerCase() === 'false') {
+            constraints.push({ type: ConstraintType.MUST_BE_UPRIGHT });
+          }
+          
+          // Create a unique item with a stable ID
+          const newItem: CargoItem = {
+            id: `csv-${timestamp}-${i}`,
+            name,
+            length,
+            width,
+            height,
+            weight,
+            color,
+            quantity,
+            constraints: constraints.length > 0 ? constraints : undefined
+          };
+          
+          console.log(`CSV row ${i}:`, values);
+          console.log('Created item from CSV:', newItem);
+          
+          newItems.push(newItem);
+          importCount++;
+        }
+        
+        // Add all items at once after processing
+        console.log(`Adding ${newItems.length} items from CSV`);
+        newItems.forEach(item => {
+          onAddItem(item);
+        });
+        
+        if (importCount > 0) {
+          setCsvImportError(`Successfully imported ${importCount} items.`);
+        } else {
+          setCsvImportError('No valid items found in the CSV file.');
+        }
+      } catch (error) {
+        console.error('Error parsing CSV:', error);
+        setCsvImportError('Error parsing CSV file. Please check the format.');
+      }
+      
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    };
+    
+    reader.onerror = () => {
+      setCsvImportError('Error reading the file');
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    };
+    
+    reader.readAsText(file);
+  };
 
   return (
     <div className="card">
       <div className="card-header">
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-center mb-4">
           <h2 className="card-title flex items-center gap-2">
             <Package className="text-accent" />
             Cargo Items
           </h2>
-          
-          {!isAdding && (
+          <div className="flex gap-2">
+            {/* CSV Import Button */}
+            <div className="relative">
+              <input
+                type="file"
+                accept=".csv"
+                ref={fileInputRef}
+                onChange={handleCsvImport}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+              />
+              <button
+                className="btn btn-secondary flex items-center"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Upload size={16} className="mr-1" /> Import CSV
+              </button>
+            </div>
+            
             <button
+              className="btn btn-accent flex items-center"
               onClick={() => setIsAdding(true)}
-              className="btn btn-accent"
             >
-              <Plus size={16} className="mr-1" />
-              Add Cargo
+              <Plus size={16} className="mr-1" /> Add Item
             </button>
-          )}
+          </div>
         </div>
+        
+
+        
+        {/* CSV Import Feedback */}
+        {csvImportError && (
+          <div className={`px-4 py-2 rounded mb-4 flex items-center ${csvImportError.startsWith('Successfully') ? 'bg-green-100 border border-green-400 text-green-700' : 'bg-red-100 border border-red-400 text-red-700'}`}>
+            {csvImportError.startsWith('Successfully') ? (
+              <CheckCircle size={16} className="mr-2 text-green-600" />
+            ) : csvImportError.startsWith('Imported') ? (
+              <AlertCircle size={16} className="mr-2 text-amber-500" />
+            ) : (
+              <AlertTriangle size={16} className="mr-2 text-red-600" />
+            )}
+            <span>{csvImportError}</span>
+            <button 
+              className="ml-auto" 
+              onClick={() => setCsvImportError(null)}
+            >
+              <X size={16} />
+            </button>
+          </div>
+        )}
       </div>
       
       <div className="card-content">
@@ -197,7 +418,7 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
               
               <div>
                 <label className="block text-sm font-medium mb-2 flex items-center gap-1.5">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent"><path d="m12 22 9-9"/><path d="M10.5 5.5 8 3H5v3l2.5 2.5"/><path d="M7 10.5 4.5 13 3 11.5l2.5-2.5"/><path d="M14 7.5 16.5 5l1.5 1.5-2.5 2.5"/><path d="M10.5 14.5 8 17l-1.5-1.5 2.5-2.5"/><path d="M17 16.5 14.5 19 13 17.5l2.5-2.5"/><path d="M21 8.5 18.5 11 17 9.5l2.5-2.5"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent"><path d="M12 22 9-9"/><path d="M10.5 5.5 8 3H5v3l2.5 2.5"/><path d="M7 10.5 4.5 13 3 11.5l2.5-2.5"/><path d="M14 7.5 16.5 5l1.5 1.5-2.5 2.5"/><path d="M10.5 14.5 8 17l-1.5-1.5 2.5-2.5"/><path d="M17 16.5 14.5 19 13 17.5l2.5-2.5"/><path d="M21 8.5 18.5 11 17 9.5l2.5-2.5"/></svg>
                   Height
                 </label>
                 <div className="relative">
@@ -320,6 +541,7 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
                                 />
                               </div>
                             </div>
+
                           </div>
                         )}
                       </div>
@@ -381,6 +603,47 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
                     {errors.quantity.message}
                   </p>
                 )}
+              </div>
+              
+              {/* Item Properties - Moved outside of color picker */}
+              <div className="md:col-span-3 border border-border rounded-md p-4">
+                <div className="text-sm font-medium mb-3 flex items-center">
+                  <Package size={16} className="mr-2 text-accent" />
+                  Item Properties
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Is Fragile checkbox */}
+                  <div className="flex items-center p-2 bg-muted/50 rounded-md border border-border hover:bg-muted transition-colors">
+                    <input
+                      type="checkbox"
+                      id="isFragile"
+                      {...register('isFragile')}
+                      className="mr-2 h-4 w-4"
+                    />
+                    <label htmlFor="isFragile" className="text-sm flex items-center cursor-pointer">
+                      <AlertTriangle size={16} className="inline mr-1 text-amber-500" /> 
+                      Is Fragile (cannot have items on top)
+                    </label>
+                  </div>
+                  
+                  {/* Is Rotatable checkbox */}
+                  <div className="flex items-center p-2 bg-muted/50 rounded-md border border-border hover:bg-muted transition-colors">
+                    <input
+                      type="checkbox"
+                      id="isRotatable"
+                      {...register('isRotatable')}
+                      className="mr-2 h-4 w-4"
+                      defaultChecked={true}
+                    />
+                    <label htmlFor="isRotatable" className="text-sm flex items-center cursor-pointer">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="inline mr-1 text-blue-500">
+                        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38"/>
+                      </svg>
+                      Is Rotatable (can be placed in any orientation)
+                    </label>
+                  </div>
+                </div>
               </div>
             </div>
             

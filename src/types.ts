@@ -7,6 +7,19 @@ export interface Container {
   maxWeight: number;
 }
 
+export enum ConstraintType {
+  MUST_BE_ON_TOP = 'MUST_BE_ON_TOP',
+  MUST_BE_ON_BOTTOM = 'MUST_BE_ON_BOTTOM',
+  MUST_BE_UPRIGHT = 'MUST_BE_UPRIGHT',
+  CAN_SUPPORT_WEIGHT = 'CAN_SUPPORT_WEIGHT',
+  FRAGILE = 'FRAGILE'
+}
+
+export interface ItemConstraint {
+  type: ConstraintType;
+  value?: number; // For weight-related constraints
+}
+
 export interface CargoItem {
   id: string;
   name: string;
@@ -16,6 +29,7 @@ export interface CargoItem {
   weight: number;
   color: string;
   quantity: number;
+  constraints?: ItemConstraint[];
 }
 
 export interface Position {
