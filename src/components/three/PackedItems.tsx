@@ -56,30 +56,24 @@ const PackedItems: React.FC<PackedItemsProps> = ({ packedItems, onItemHover }) =
         let xOffset, yOffset, zOffset;
         let itemLength, itemHeight, itemWidth;
         
+        // In our container model, length is along the X axis, height is along the Y axis, and width is along the Z axis
+        // This is the standard orientation for all container types
+        xOffset = item.length / 2;
+        yOffset = item.height / 2;
+        zOffset = item.width / 2;
+        itemLength = item.length;
+        itemHeight = item.height;
+        itemWidth = item.width;
+        
+        // Apply rotations if specified
         if (item.rotation.y === 90) {
-          // Width and length are swapped when rotated 90 degrees on Y axis
-          xOffset = item.width / 2;
-          yOffset = item.height / 2;
-          zOffset = item.length / 2;
-          itemLength = item.width;
-          itemHeight = item.height;
-          itemWidth = item.length;
+          // Swap length and width when rotated 90 degrees on Y axis
+          [xOffset, zOffset] = [zOffset, xOffset];
+          [itemLength, itemWidth] = [itemWidth, itemLength];
         } else if (item.rotation.x === 90) {
-          // Height and width are swapped when rotated 90 degrees on X axis
-          xOffset = item.length / 2;
-          yOffset = item.width / 2;
-          zOffset = item.height / 2;
-          itemLength = item.length;
-          itemHeight = item.width;
-          itemWidth = item.height;
-        } else {
-          // No rotation or other rotations
-          xOffset = item.length / 2;
-          yOffset = item.height / 2;
-          zOffset = item.width / 2;
-          itemLength = item.length;
-          itemHeight = item.height;
-          itemWidth = item.width;
+          // Swap height and width when rotated 90 degrees on X axis
+          [yOffset, zOffset] = [zOffset, yOffset];
+          [itemHeight, itemWidth] = [itemWidth, itemHeight];
         }
         
         // Parse the color and create a darker version for the edges

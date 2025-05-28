@@ -785,17 +785,428 @@ const algorithms: Record<string, PackingAlgorithm> = {
   // Default algorithm - already implemented
   default: packItems,
   
-  // Extreme Point algorithm
+  // Guillotine Cut Algorithm
   extreme_point: (items: CargoItem[], container: Container): PackedResult => {
-    console.log('Using Extreme Point algorithm');
-    // For now, this is a placeholder that uses the default algorithm
-    // In a real implementation, this would be a different algorithm
-    return packItems(items, container);
+    console.log('Using Guillotine Cut Algorithm');
+    
+    // Sort items by volume in descending order for better packing
+    const sortedItems = [...items].sort((a, b) => {
+      const volumeA = a.length * a.width * a.height;
+      const volumeB = b.length * b.width * b.height;
+      return volumeB - volumeA; // Descending order
+    });
+    
+    // Initialize container dimensions
+    const containerLength = container.length;
+    const containerWidth = container.width;
+    const containerHeight = container.height;
+    const containerVolume = containerLength * containerWidth * containerHeight;
+    
+    // Track packed and unpacked items
+    const packedItems: PackedItem[] = [];
+    const unpackedItems: CargoItem[] = [];
+    let totalVolumePacked = 0;
+    let totalWeight = 0;
+    
+    // Define a space (free area) in the container
+    type Space = {
+      x: number; // x-coordinate (length)
+      y: number; // y-coordinate (height)
+      z: number; // z-coordinate (width)
+      length: number; // length dimension (along x-axis)
+      height: number; // height dimension (along y-axis)
+      width: number; // width dimension (along z-axis)
+    };
+    
+    // Initialize with one space representing the entire container
+    let spaces: Space[] = [
+      {
+        x: 0,
+        y: 0,
+        z: 0,
+        length: containerLength,
+        height: containerHeight,
+        width: containerWidth
+      }
+    ];
+
+    // Function to split a space after placing an item using guillotine cuts
+    const splitSpace = (space: Space, item: { width: number; height: number; length: number }, x: number, y: number, z: number): Space[] => {
+      // Create the six possible spaces after placing the item
+      const possibleSpaces: Space[] = [];
+      
+      // Space to the right of the item (along x-axis/length)
+      if (x + item.length < space.x + space.length) {
+        possibleSpaces.push({
+          x: x + item.length,
+          y: space.y,
+          z: space.z,
+          length: (space.x + space.length) - (x + item.length),
+          height: space.height,
+          width: space.width
+        });
+      }
+      
+      // Space to the left of the item (along x-axis/length)
+      if (x > space.x) {
+        possibleSpaces.push({
+          x: space.x,
+          y: space.y,
+          z: space.z,
+          length: x - space.x,
+          height: space.height,
+          width: space.width
+        });
+      }
+      
+      // Space above the item (along y-axis/height)
+      if (y + item.height < space.y + space.height) {
+        possibleSpaces.push({
+          x: space.x,
+          y: y + item.height,
+          z: space.z,
+          length: space.length,
+          height: (space.y + space.height) - (y + item.height),
+          width: space.width
+        });
+      }
+      
+      // Space in front of the item (along z-axis/width)
+      if (z + item.width < space.z + space.width) {
+        possibleSpaces.push({
+          x: space.x,
+          y: space.y,
+          z: z + item.width,
+          length: space.length,
+          height: space.height,
+          width: (space.z + space.width) - (z + item.width)
+        });
+      }
+      
+      // Space behind the item (along z-axis/width)
+      if (z > space.z) {
+        possibleSpaces.push({
+          x: space.x,
+          y: space.y,
+          z: space.z,
+          length: space.length,
+          height: space.height,
+          width: z - space.z
+        });
+      }
+      
+      // Filter out spaces that are too small to be useful
+      const minDimension = 0.1; // Minimum useful dimension in units
+      const filteredSpaces = possibleSpaces.filter(space => 
+        space.length >= minDimension && 
+        space.height >= minDimension && 
+        space.width >= minDimension
+      );
+      
+      return filteredSpaces;
+    };
+    
+    // Function to check if an item fits in a space
+    const itemFitsInSpace = (item: CargoItem, space: Space): boolean => {
+      // Using consistent dimension mapping: length=x, height=y, width=z
+      return (
+        item.length <= space.length &&
+        item.height <= space.height &&
+        item.width <= space.width
+      );
+    };
+    
+    // Function to check if an item would overlap with already packed items
+    const itemOverlapsWithPacked = (item: CargoItem, x: number, y: number, z: number): boolean => {
+      for (const packedItem of packedItems) {
+        const px = packedItem.position.x;
+        const py = packedItem.position.y;
+        const pz = packedItem.position.z;
+        
+        // Check if the item's bounding box overlaps with the packed item's bounding box
+        // Using consistent dimension mapping: x=length, y=height, z=width
+        if (x < px + packedItem.length && x + item.length > px &&
+            y < py + packedItem.height && y + item.height > py &&
+            z < pz + packedItem.width && z + item.width > pz) {
+          return true; // Overlap detected
+        }
+      }
+      return false; // No overlap
+    };
+    
+    // Function to check if an item would be outside the container
+    const itemOutsideContainer = (item: CargoItem, x: number, y: number, z: number): boolean => {
+      // Using consistent dimension mapping: x=length, y=height, z=width
+      return (
+        x < 0 || x + item.length > containerLength ||
+        y < 0 || y + item.height > containerHeight ||
+        z < 0 || z + item.width > containerWidth
+      );
+    };
+    
+    // Function to find the lowest possible y-position for an item at a given (x,z) coordinate
+    // This ensures items don't float in the air
+    const findLowestPosition = (item: CargoItem, x: number, z: number): number => {
+      let lowestY = 0; // Start at the bottom of the container
+      
+      for (const packedItem of packedItems) {
+        const px = packedItem.position.x;
+        const py = packedItem.position.y;
+        const pz = packedItem.position.z;
+        
+        // Check if this item is directly below the position we're checking
+        // Using consistent dimension mapping: x=length, y=height, z=width
+        if (x < px + packedItem.length && x + item.length > px &&
+            z < pz + packedItem.width && z + item.width > pz) {
+          // If there's overlap in x and z coordinates, this item could be supporting our new item
+          const possibleY = py + packedItem.height;
+          if (possibleY > lowestY) {
+            lowestY = possibleY;
+          }
+        }
+      }
+      
+      return lowestY;
+    };
+    
+    // Function to merge spaces for better space utilization
+    const mergeSpaces = (spaceList: Space[]): Space[] => {
+      if (spaceList.length <= 1) return spaceList;
+      
+      // First, remove any spaces that are completely contained within others
+      let result = [...spaceList];
+      
+      // Remove fully contained spaces
+      for (let i = result.length - 1; i >= 0; i--) {
+        if (i >= result.length) continue; // Safety check
+        
+        const current = result[i];
+        for (let j = 0; j < result.length; j++) {
+          if (i === j || i >= result.length) continue; // Safety check
+          
+          const other = result[j];
+          if (current.x >= other.x && 
+              current.y >= other.y && 
+              current.z >= other.z && 
+              current.x + current.length <= other.x + other.length &&
+              current.y + current.height <= other.y + other.height &&
+              current.z + current.width <= other.z + other.width) {
+            // Current space is fully contained in other space, remove it
+            result.splice(i, 1);
+            break;
+          }
+        }
+      }
+      
+      // Limit the number of spaces to prevent performance issues
+      if (result.length > 50) {
+        // Sort by volume and keep only the 50 largest spaces
+        result.sort((a, b) => {
+          const volumeA = a.length * a.height * a.width;
+          const volumeB = b.length * b.height * b.width;
+          return volumeB - volumeA; // Descending order
+        });
+        result = result.slice(0, 50);
+      }
+      
+      // Try to merge adjacent spaces with the same dimensions in one direction
+      // Limit the number of merge iterations to prevent infinite loops
+      let merged = true;
+      let mergeIterations = 0;
+      const MAX_MERGE_ITERATIONS = 5;
+      
+      while (merged && result.length > 1 && mergeIterations < MAX_MERGE_ITERATIONS) {
+        merged = false;
+        mergeIterations++;
+        
+        for (let i = 0; i < result.length; i++) {
+          if (merged) break; // If we merged something, restart the outer loop
+          
+          for (let j = i + 1; j < result.length; j++) {
+            const a = result[i];
+            const b = result[j];
+            
+            // Check if spaces can be merged in the x direction (length)
+            if (a.y === b.y && a.z === b.z && a.height === b.height && a.width === b.width) {
+              if (a.x + a.length === b.x) {
+                // A is directly to the left of B
+                a.length += b.length;
+                result.splice(j, 1);
+                merged = true;
+                break;
+              } else if (b.x + b.length === a.x) {
+                // B is directly to the left of A
+                a.x = b.x;
+                a.length += b.length;
+                result.splice(j, 1);
+                merged = true;
+                break;
+              }
+            }
+            
+            // Check if spaces can be merged in the y direction (height)
+            if (!merged && a.x === b.x && a.z === b.z && a.length === b.length && a.width === b.width) {
+              if (a.y + a.height === b.y) {
+                // A is directly below B
+                a.height += b.height;
+                result.splice(j, 1);
+                merged = true;
+                break;
+              } else if (b.y + b.height === a.y) {
+                // B is directly below A
+                a.y = b.y;
+                a.height += b.height;
+                result.splice(j, 1);
+                merged = true;
+                break;
+              }
+            }
+            
+            // Check if spaces can be merged in the z direction (width)
+            if (!merged && a.x === b.x && a.y === b.y && a.length === b.length && a.height === b.height) {
+              if (a.z + a.width === b.z) {
+                // A is directly behind B
+                a.width += b.width;
+                result.splice(j, 1);
+                merged = true;
+                break;
+              } else if (b.z + b.width === a.z) {
+                // B is directly behind A
+                a.z = b.z;
+                a.width += b.width;
+                result.splice(j, 1);
+                merged = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+      
+      return result;
+    };
+    
+    // Process each item
+    for (let i = 0; i < sortedItems.length; i++) {
+      const item = sortedItems[i];
+      let packed = false;
+      
+      // Check if adding this item would exceed weight capacity
+      if (totalWeight + item.weight > container.maxWeight) {
+        unpackedItems.push(item);
+        continue;
+      }
+      
+      // Merge spaces periodically to optimize space usage
+      if (i % 3 === 0) {
+        spaces = mergeSpaces(spaces);
+      }
+      
+      // Sort spaces by volume (smallest first) for better space utilization
+      spaces.sort((a, b) => {
+        const volumeA = a.length * a.height * a.width;
+        const volumeB = b.length * b.height * b.width;
+        return volumeA - volumeB; // Ascending order (smallest first)
+      });
+      
+      // Try to find a space for this item
+      for (let j = 0; j < spaces.length; j++) {
+        const space = spaces[j];
+        
+        // Check if item fits in this space
+        if (itemFitsInSpace(item, space)) {
+          // Place item at the bottom-left-back corner of the space
+          let x = space.x;
+          let z = space.z;
+          
+          // Find the lowest possible y-coordinate for this item (to prevent floating)
+          let y = findLowestPosition(item, x, z);
+          
+          // Make sure the item is still within the space's height
+          if (y + item.height > space.y + space.height) {
+            continue; // This item would extend beyond the space's height, try next space
+          }
+          
+          // Double-check that the item is within container bounds
+          if (itemOutsideContainer(item, x, y, z)) {
+            continue; // Item would be outside the container, try next space
+          }
+          
+          // Check if this placement would overlap with already packed items
+          if (itemOverlapsWithPacked(item, x, y, z)) {
+            continue; // Try the next space
+          }
+          
+          // Add to packed items
+          packedItems.push({
+            id: item.id,
+            name: item.name,
+            width: item.width,
+            height: item.height,
+            length: item.length,
+            weight: item.weight,
+            color: item.color,
+            quantity: item.quantity,
+            constraints: item.constraints,
+            position: { x, y, z },
+            rotation: { x: 0, y: 0, z: 0 } // No rotation in this implementation
+          });
+          
+          // Update totals
+          const itemVolume = item.width * item.height * item.length;
+          totalVolumePacked += itemVolume;
+          totalWeight += item.weight;
+          
+          // Split the space and get new spaces
+          const newSpaces = splitSpace(space, item, x, y, z);
+          
+          // Remove the used space and add new spaces
+          spaces.splice(j, 1);
+          spaces.push(...newSpaces);
+          
+          // Send progress update
+          const progress = ((i + 1) / sortedItems.length) * 100;
+          
+          // Only send updates every few items to reduce message overhead
+          if (i % 3 === 0 || i === sortedItems.length - 1) {
+            self.postMessage({
+              type: 'item_packed',
+              packedItems: [...packedItems],
+              unpackedItems: [],
+              containerFillPercentage: (totalVolumePacked / containerVolume) * 100,
+              weightCapacityPercentage: (totalWeight / container.maxWeight) * 100,
+              totalWeight,
+              progress
+            });
+          }
+          
+          packed = true;
+          break;
+        }
+      }
+      
+      // If item couldn't be packed, add to unpacked items
+      if (!packed) {
+        unpackedItems.push(item);
+      }
+    }
+    
+    // Calculate final statistics
+    const containerFillPercentage = (totalVolumePacked / containerVolume) * 100;
+    const weightCapacityPercentage = (totalWeight / container.maxWeight) * 100;
+    
+    return {
+      packedItems,
+      unpackedItems,
+      containerFillPercentage,
+      weightCapacityPercentage,
+      totalWeight
+    };
   },
   
-  // Layer-Based algorithm
+  // Shelving with Search Algorithm
   layer_based: (items: CargoItem[], container: Container): PackedResult => {
-    console.log('Using Layer-Based algorithm');
+    console.log('Using Shelving with Search Algorithm');
     // Placeholder implementation
     return packItems(items, container);
   },
@@ -807,9 +1218,9 @@ const algorithms: Record<string, PackingAlgorithm> = {
     return packItems(items, container);
   },
   
-  // Simulated Annealing
+  // Reinforcement Deep Learning
   simulated_annealing: (items: CargoItem[], container: Container): PackedResult => {
-    console.log('Using Simulated Annealing algorithm');
+    console.log('Using Reinforcement Deep Learning algorithm');
     // Placeholder implementation
     return packItems(items, container);
   }
