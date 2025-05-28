@@ -217,14 +217,17 @@ const ExportPanel: React.FC<ExportPanelProps> = ({
             <div className="flex items-center gap-2 text-sm">
               <CheckCircle size={16} className="text-success" />
               <span className="text-muted-foreground">Space utilization:</span>
-              <span className="font-medium">{packedResult.containerFillPercentage.toFixed(1)}%</span>
+              <span className="font-medium">
+                {(packedResult?.containerFillPercentage || 0).toFixed(1)}%
+              </span>
             </div>
             
             <div className="flex items-center gap-2 text-sm">
               <CheckCircle size={16} className="text-success" />
               <span className="text-muted-foreground">Weight:</span>
               <span className="font-medium">
-                {packedResult.totalWeight.toFixed(1)} kg ({packedResult.weightCapacityPercentage.toFixed(1)}% of capacity)
+                {(packedResult?.totalWeight || 0).toFixed(1)} kg 
+                ({(packedResult?.weightCapacityPercentage || 0).toFixed(1)}% of capacity)
               </span>
             </div>
             

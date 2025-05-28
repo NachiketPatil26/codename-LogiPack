@@ -54,4 +54,6 @@ export interface PackedResult {
   containerFillPercentage: number;
   weightCapacityPercentage: number;
   totalWeight: number;
+  progress?: number;
+  type?: string;
 }

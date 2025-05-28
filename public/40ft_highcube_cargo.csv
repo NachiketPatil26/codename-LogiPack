@@ -1,0 +1,16 @@
+name,length,width,height,weight,color,quantity,fragile,rotatable
+Tall Equipment,120,100,200,800,#FF5757,4,false,true
+Stacked Pallets,120,100,240,1000,#5271FF,5,false,true
+Industrial Machinery,200,180,180,1500,#7ED957,2,false,false
+High-Value Electronics,100,80,120,60,#FF66C4,6,true,true
+Art Installations,150,100,220,120,#00D2D3,3,true,false
+Warehouse Shelving,180,60,250,300,#FF914D,4,false,true
+Retail Fixtures,120,80,200,150,#8C52FF,5,false,true
+Automotive Equipment,200,150,180,1200,#00C49A,2,false,false
+Fragile Displays,100,80,180,70,#43D9D9,4,true,false
+Furniture Sets,180,120,200,250,#FFA502,3,false,true
+Tall Storage Cabinets,100,80,240,180,#FF5DCD,4,false,false
+Laboratory Equipment,120,100,180,300,#6C5CE7,3,true,false
+Stacked Containers,120,120,240,400,#1DD1A1,5,false,true
+Vertical Machinery,150,120,260,900,#FF5757,2,false,false
+Exhibition Materials,200,150,220,350,#5271FF,3,false,true

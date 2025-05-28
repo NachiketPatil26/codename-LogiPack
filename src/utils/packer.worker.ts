@@ -16,6 +16,11 @@ interface Container {
   maxWeight: number;
 }
 
+interface ItemConstraint {
+  type: string;
+  value?: number; // For weight-related constraints
+}
+
 interface CargoItem {
   id: string;
   name: string;
@@ -25,6 +30,7 @@ interface CargoItem {
   weight: number;
   color: string;
   quantity: number;
+  constraints?: ItemConstraint[];
 }
 
 interface PackedItem extends CargoItem {
@@ -66,7 +72,22 @@ interface Rotation {
 }
 
 const getPossibleRotations = (item: CargoItem): Rotation[] => {
-  // Implement all 6 possible orientations of a 3D box
+  // Check if the item must be upright (non-rotatable)
+  const mustBeUpright = item.constraints?.some(c => c.type === CONSTRAINT_TYPES.MUST_BE_UPRIGHT);
+  
+  if (mustBeUpright) {
+    console.log(`Item ${item.id} must be upright - limiting rotations`);
+    // Only allow rotations that keep the item upright (y-axis rotations)
+    return [
+      // Original orientation
+      { x: 0, y: 0, z: 0, length: item.length, width: item.width, height: item.height },
+      
+      // Rotate 90° around Y-axis (width and length swap)
+      { x: 0, y: 90, z: 0, length: item.width, width: item.length, height: item.height },
+    ];
+  }
+  
+  // For rotatable items, implement all 6 possible orientations of a 3D box
   return [
     // Original orientation
     { x: 0, y: 0, z: 0, length: item.length, width: item.width, height: item.height },
@@ -203,10 +224,16 @@ const isPositionEmpty = (
 const findBestPosition = (
   item: CargoItem,
   packedItems: PackedItem[],
-  container: Container
+  container: Container,
+  alternativeRotation: boolean = false
 ): { position: Position; rotation: Rotation } | null => {
   // Get all possible rotations for this item
-  const rotations = getPossibleRotations(item);
+  let rotations = getPossibleRotations(item);
+  
+  // If using alternative rotation strategy, reverse the order to try different orientations first
+  if (alternativeRotation) {
+    rotations = [...rotations].reverse();
+  }
   // Use a smaller step size for more precise packing
   const step = 1; // Use smallest step size for precise packing and to avoid overlaps
   
@@ -360,12 +387,37 @@ const findBestPosition = (
   return null;
 };
 
+// Constraint types
+const CONSTRAINT_TYPES = {
+  MUST_BE_ON_TOP: 'MUST_BE_ON_TOP',
+  MUST_BE_ON_BOTTOM: 'MUST_BE_ON_BOTTOM',
+  MUST_BE_UPRIGHT: 'MUST_BE_UPRIGHT',
+  CAN_SUPPORT_WEIGHT: 'CAN_SUPPORT_WEIGHT',
+  FRAGILE: 'FRAGILE'
+};
+
 // Industry standard packing strategies
 const PACKING_STRATEGIES = {
   LARGEST_VOLUME_FIRST: 'LARGEST_VOLUME_FIRST',
   HEAVIEST_FIRST: 'HEAVIEST_FIRST',
   MOST_CONSTRAINED_FIRST: 'MOST_CONSTRAINED_FIRST',
-  WALL_BUILDING: 'WALL_BUILDING'
+  WALL_BUILDING: 'WALL_BUILDING',
+  FRAGILE_ITEMS_LAST: 'FRAGILE_ITEMS_LAST'
+};
+
+// Check if an item is fragile
+const isFragile = (item: CargoItem): boolean => {
+  return item.constraints?.some(c => c.type === CONSTRAINT_TYPES.FRAGILE) || false;
+};
+
+// Check if an item must be upright (non-rotatable)
+const mustBeUpright = (item: CargoItem): boolean => {
+  return item.constraints?.some(c => c.type === CONSTRAINT_TYPES.MUST_BE_UPRIGHT) || false;
+};
+
+// Count constraints on an item
+const countConstraints = (item: CargoItem): number => {
+  return item.constraints?.length || 0;
 };
 
 // Sort items based on the selected strategy
@@ -374,24 +426,58 @@ const sortItemsByStrategy = (items: CargoItem[], strategy: string): CargoItem[] 
   
   switch (strategy) {
     case PACKING_STRATEGIES.LARGEST_VOLUME_FIRST:
-      return itemsCopy.sort((a, b) => 
-        (b.length * b.width * b.height) - (a.length * a.width * a.height)
-      );
+      return itemsCopy.sort((a, b) => {
+        // First sort by fragility (non-fragile first)
+        if (isFragile(a) !== isFragile(b)) {
+          return isFragile(a) ? 1 : -1; // Non-fragile items first
+        }
+        // Then by volume
+        return (b.length * b.width * b.height) - (a.length * a.width * a.height);
+      });
       
     case PACKING_STRATEGIES.HEAVIEST_FIRST:
-      return itemsCopy.sort((a, b) => b.weight - a.weight);
+      return itemsCopy.sort((a, b) => {
+        // First sort by fragility (non-fragile first)
+        if (isFragile(a) !== isFragile(b)) {
+          return isFragile(a) ? 1 : -1; // Non-fragile items first
+        }
+        // Then by weight
+        return b.weight - a.weight;
+      });
       
     case PACKING_STRATEGIES.MOST_CONSTRAINED_FIRST:
-      // Sort by the minimum of length, width, height (most constrained dimension)
       return itemsCopy.sort((a, b) => {
+        // First sort by number of constraints
+        const aConstraints = countConstraints(a);
+        const bConstraints = countConstraints(b);
+        if (aConstraints !== bConstraints) {
+          return bConstraints - aConstraints; // More constrained first
+        }
+        // Then by the minimum dimension
         const aMin = Math.min(a.length, a.width, a.height);
         const bMin = Math.min(b.length, b.width, b.height);
         return bMin - aMin;
       });
       
     case PACKING_STRATEGIES.WALL_BUILDING:
-      // Sort by height (to build walls from the bottom up)
-      return itemsCopy.sort((a, b) => b.height - a.height);
+      return itemsCopy.sort((a, b) => {
+        // First sort by fragility (non-fragile first)
+        if (isFragile(a) !== isFragile(b)) {
+          return isFragile(a) ? 1 : -1; // Non-fragile items first
+        }
+        // Then by height for wall building
+        return b.height - a.height;
+      });
+      
+    case PACKING_STRATEGIES.FRAGILE_ITEMS_LAST:
+      return itemsCopy.sort((a, b) => {
+        // Sort by fragility
+        if (isFragile(a) !== isFragile(b)) {
+          return isFragile(a) ? 1 : -1; // Non-fragile items first
+        }
+        // Then by volume for similar items
+        return (b.length * b.width * b.height) - (a.length * a.width * a.height);
+      });
       
     default:
       return itemsCopy;
@@ -403,8 +489,10 @@ const tryPackItem = (
   item: CargoItem, 
   packedItems: PackedItem[], 
   container: Container, 
-  totalWeight: number
+  totalWeight: number,
+  alternativeRotation: boolean = false
 ): { packedItem: PackedItem | null; success: boolean } => {
+  // Check weight limit
   if (totalWeight + item.weight > container.maxWeight) {
     console.log('Item exceeds weight limit:', {
       itemWeight: item.weight,
@@ -414,9 +502,20 @@ const tryPackItem = (
     return { packedItem: null, success: false };
   }
 
-  const result = findBestPosition(item, packedItems, container);
+  // Log if item has constraints
+  if (item.constraints && item.constraints.length > 0) {
+    console.log(`Item ${item.id} has constraints:`, item.constraints);
+  }
+
+  const result = findBestPosition(item, packedItems, container, alternativeRotation);
   
   if (result) {
+    // For fragile items, verify that no items will be placed on top
+    if (isFragile(item) && !isValidForFragileItem(result.position, result.rotation, packedItems)) {
+      console.log(`Cannot place fragile item ${item.id} at position:`, result.position);
+      return { packedItem: null, success: false };
+    }
+    
     const packedItem = {
       ...item,
       position: result.position,
@@ -424,120 +523,240 @@ const tryPackItem = (
       // Use the user-provided color instead of generating a random one
       color: item.color || getRandomColor(), // Fallback to random color if none provided
     };
+    
+    console.log(`Successfully packed item ${item.id}`, {
+      position: result.position,
+      rotation: result.rotation,
+      isFragile: isFragile(item),
+      mustBeUpright: mustBeUpright(item)
+    });
+    
     return { packedItem, success: true };
   }
   
+  console.log(`Failed to find position for item ${item.id}`);
   return { packedItem: null, success: false };
 };
 
-// Main packing algorithm with multiple strategies and retries
+// Check if a position is valid for a fragile item (nothing on top)
+const isValidForFragileItem = (
+  position: Position,
+  rotation: Rotation,
+  packedItems: PackedItem[]
+): boolean => {
+  // For fragile items, we need to ensure no items are placed on top
+  const itemTop = position.y + rotation.height;
+  
+  // Check if any packed item is above this item
+  for (const packedItem of packedItems) {
+    // Skip if the item is not above our position
+    if (packedItem.position.y <= itemTop) continue;
+    
+    // Check if the items overlap in the X-Z plane
+    const itemEndX = position.x + rotation.length;
+    const itemEndZ = position.z + rotation.width;
+    
+    const packedEndX = packedItem.position.x + packedItem.length;
+    const packedEndZ = packedItem.position.z + packedItem.width;
+    
+    // If there's overlap in both X and Z axes, the item is above our fragile item
+    if (
+      position.x < packedEndX && itemEndX > packedItem.position.x &&
+      position.z < packedEndZ && itemEndZ > packedItem.position.z
+    ) {
+      console.log('Cannot place fragile item here - would have items on top');
+      return false;
+    }
+  }
+  
+  return true;
+};
 const packItems = (items: CargoItem[], container: Container): PackedResult => {
-  console.log('Starting packing algorithm with:', {
-    itemCount: items.length,
-    container
-  });
-
+  console.log('Starting packing algorithm with:', { items, container });
+  
   // Expand items based on quantity
   const expandedItems: CargoItem[] = [];
   items.forEach(item => {
-    const quantity = item.quantity || 1; // Default to 1 if quantity is not specified
-    
-    for (let i = 0; i < quantity; i++) {
-      // Create a copy of the item with a unique ID for each instance
+    for (let i = 0; i < item.quantity; i++) {
       expandedItems.push({
         ...item,
-        id: `${item.id}-${i}`, // Ensure each copy has a unique ID
+        id: `${item.id}-${i}`,
+        quantity: 1 // Set quantity to 1 for each expanded item
       });
     }
   });
   
   console.log(`Expanded ${items.length} items to ${expandedItems.length} items based on quantity`);
-
-  // Try different packing strategies to maximize container utilization
-  const strategies = [
-    PACKING_STRATEGIES.LARGEST_VOLUME_FIRST,
-    PACKING_STRATEGIES.WALL_BUILDING,
-    PACKING_STRATEGIES.HEAVIEST_FIRST,
-    PACKING_STRATEGIES.MOST_CONSTRAINED_FIRST
-  ];
   
+  // Initialize tracking variables
+  const packedItems: PackedItem[] = [];
+  const unpackedItems: CargoItem[] = [];
+  let totalVolumePacked = 0;
+  let totalWeight = 0;
+  const containerVolume = container.length * container.width * container.height;
+  
+  // Variables to track the best packing result
   let bestResult: PackedResult | null = null;
   let bestUtilization = 0;
   
-  // Try each strategy and keep the best result
+  // Try different packing strategies
+  const strategies = [
+    'LARGEST_VOLUME_FIRST',
+    'HEAVIEST_FIRST',
+    'MOST_CONSTRAINED_FIRST'
+  ];
+  
+  // Maximum number of retries for failed items
+  const MAX_RETRIES = 2;
+  
+  // Try each strategy until we find one that works well
   for (const strategy of strategies) {
     console.log(`Trying packing strategy: ${strategy}`);
     
-    const packedItems: PackedItem[] = [];
-    const unpackedItems: CargoItem[] = [];
-    let totalWeight = 0;
-
     // Sort items according to the current strategy
-    const sortedItems = sortItemsByStrategy(expandedItems, strategy);
+    const sortedItems = sortItemsByStrategy([...expandedItems], strategy);
     
-    // First pass: try to pack all items
-    for (const item of sortedItems) {
+    // Keep track of items that failed to pack for retrying
+    let failedItems: CargoItem[] = [];
+    let retryCount = 0;
+    
+    // Try to pack each item
+    for (let i = 0; i < sortedItems.length; i++) {
+      const item = sortedItems[i];
       console.log(`Processing item with strategy ${strategy}:`, item);
       
-      const { packedItem, success } = tryPackItem(item, packedItems, container, totalWeight);
+      const { packedItem, success } = tryPackItem(
+        item, 
+        packedItems, 
+        container, 
+        totalWeight
+      );
       
       if (success && packedItem) {
         packedItems.push(packedItem);
+        totalVolumePacked += item.length * item.width * item.height;
         totalWeight += item.weight;
+        console.log(`Successfully packed item ${item.id}`, packedItem);
+        
+        // Send progress update for this item
+        const progressFillPercentage = (totalVolumePacked / containerVolume) * 100;
+        const progressWeightPercentage = (totalWeight / container.maxWeight) * 100;
+        
+        // Send incremental update to show real-time packing
+        self.postMessage({
+          type: 'item_packed',
+          packedItems: [...packedItems],
+          unpackedItems: [...unpackedItems, ...sortedItems.slice(i + 1), ...failedItems],
+          containerFillPercentage: progressFillPercentage,
+          weightCapacityPercentage: progressWeightPercentage,
+          totalWeight,
+          progress: (i + 1) / sortedItems.length * 100
+        });
+        
+        // Add a small delay to visualize the packing process
+        const startTime = performance.now();
+        while (performance.now() - startTime < 50) {
+          // Busy wait for 50ms to create a visual delay
+        }
       } else {
-        unpackedItems.push(item);
+        // Add to failed items for retry
+        failedItems.push(item);
+        console.log(`Failed to pack item ${item.id}`);
       }
     }
     
-    // Second pass: try to pack remaining items with different orientations
-    // This implements the industry practice of trying different arrangements
-    if (unpackedItems.length > 0) {
-      console.log(`Second pass for ${unpackedItems.length} unpacked items with strategy ${strategy}`);
+    // Retry failed items
+    while (failedItems.length > 0 && retryCount < MAX_RETRIES) {
+      console.log(`Retry attempt ${retryCount + 1} for ${failedItems.length} failed items`);
+      retryCount++;
       
-      const stillUnpacked: CargoItem[] = [];
+      // Try a different approach for failed items
+      const itemsToRetry = [...failedItems];
+      failedItems = [];
       
-      for (const item of unpackedItems) {
-        const { packedItem, success } = tryPackItem(item, packedItems, container, totalWeight);
+      for (const item of itemsToRetry) {
+        // Try with a different rotation priority
+        const { packedItem, success } = tryPackItem(
+          item, 
+          packedItems, 
+          container, 
+          totalWeight,
+          true // Force alternative rotation priority
+        );
         
         if (success && packedItem) {
           packedItems.push(packedItem);
+          totalVolumePacked += item.length * item.width * item.height;
           totalWeight += item.weight;
+          console.log(`Successfully packed item ${item.id} on retry ${retryCount}`);
+          
+          // Send progress update for this retry item
+          const finalFillPercentage = (totalVolumePacked / containerVolume) * 100;
+          const finalWeightPercentage = (totalWeight / container.maxWeight) * 100;
+          
+          self.postMessage({
+            type: 'item_packed',
+            packedItems: [...packedItems],
+            unpackedItems: [...unpackedItems, ...failedItems],
+            containerFillPercentage: finalFillPercentage,
+            weightCapacityPercentage: finalWeightPercentage,
+            totalWeight,
+            progress: 100 - (failedItems.length / expandedItems.length * 100)
+          });
+          
+          // Add a small delay to visualize the packing process
+          const startTime = performance.now();
+          while (performance.now() - startTime < 100) {
+            // Busy wait for 100ms
+          }
         } else {
-          stillUnpacked.push(item);
+          // Still failed after retry
+          failedItems.push(item);
         }
       }
-      
-      // Update the unpacked items list
-      unpackedItems.length = 0;
-      unpackedItems.push(...stillUnpacked);
     }
     
-    // Calculate utilization metrics
-    const containerVolume = container.length * container.width * container.height;
-    const packedVolume = packedItems.reduce((sum, item) => 
-      sum + (item.length * item.width * item.height), 0);
+    // Add any remaining failed items to unpacked
+    unpackedItems.push(...failedItems);
     
-    const containerFillPercentage = (packedVolume / containerVolume) * 100;
-    const weightCapacityPercentage = (totalWeight / container.maxWeight) * 100;
+    // Calculate current metrics for this strategy
+    const currentFillPercentage = (totalVolumePacked / containerVolume) * 100;
+    const currentWeightPercentage = (totalWeight / container.maxWeight) * 100;
     
+    // If we've packed more than 85% of the container, consider this a success
+    if (currentFillPercentage > 85) {
+      console.log(`Strategy ${strategy} achieved good packing efficiency: ${currentFillPercentage.toFixed(2)}%`);
+      break;
+    }
+    
+    // If this strategy didn't work well, reset and try the next one
+    if (strategy !== strategies[strategies.length - 1]) {
+      console.log(`Strategy ${strategy} didn't achieve good packing, trying next strategy`);
+      packedItems.length = 0;
+      unpackedItems.length = 0;
+      totalVolumePacked = 0;
+      totalWeight = 0;
+    }
+    
+    // Log the results of this strategy
     console.log(`Strategy ${strategy} results:`, {
       packedItems: packedItems.length,
       unpackedItems: unpackedItems.length,
-      containerFillPercentage,
-      weightCapacityPercentage
+      containerFillPercentage: currentFillPercentage,
+      weightCapacityPercentage: currentWeightPercentage
     });
     
     // Check if this strategy gave better results
     // We prioritize: 1) Number of packed items, 2) Space utilization
-    const currentUtilization = packedItems.length * 1000 + containerFillPercentage;
+    const currentUtilization = packedItems.length * 1000 + currentFillPercentage;
     
     if (currentUtilization > bestUtilization) {
       bestUtilization = currentUtilization;
       bestResult = {
         packedItems,
         unpackedItems,
-        containerFillPercentage,
-        weightCapacityPercentage,
+        containerFillPercentage: currentFillPercentage,
+        weightCapacityPercentage: currentWeightPercentage,
         totalWeight
       };
     }
@@ -558,61 +777,129 @@ const packItems = (items: CargoItem[], container: Container): PackedResult => {
   return bestResult;
 };
 
+// Define algorithm type
+type PackingAlgorithm = (items: CargoItem[], container: Container) => PackedResult;
+
+// Algorithm implementations
+const algorithms: Record<string, PackingAlgorithm> = {
+  // Default algorithm - already implemented
+  default: packItems,
+  
+  // Extreme Point algorithm
+  extreme_point: (items: CargoItem[], container: Container): PackedResult => {
+    console.log('Using Extreme Point algorithm');
+    // For now, this is a placeholder that uses the default algorithm
+    // In a real implementation, this would be a different algorithm
+    return packItems(items, container);
+  },
+  
+  // Layer-Based algorithm
+  layer_based: (items: CargoItem[], container: Container): PackedResult => {
+    console.log('Using Layer-Based algorithm');
+    // Placeholder implementation
+    return packItems(items, container);
+  },
+  
+  // Genetic Algorithm
+  genetic: (items: CargoItem[], container: Container): PackedResult => {
+    console.log('Using Genetic algorithm');
+    // Placeholder implementation
+    return packItems(items, container);
+  },
+  
+  // Simulated Annealing
+  simulated_annealing: (items: CargoItem[], container: Container): PackedResult => {
+    console.log('Using Simulated Annealing algorithm');
+    // Placeholder implementation
+    return packItems(items, container);
+  }
+};
+
 // Worker message handler
 console.log('Setting up worker message handler');
 
 self.onmessage = (event) => {
   console.log('Worker received message:', event.data);
   
+  const { items, container, algorithm = 'default' } = event.data;
+  
+  if (!items || !container) {
+    console.error('Missing required data in worker message');
+    self.postMessage({ 
+      error: 'Missing required data',
+      packedItems: [],
+      unpackedItems: [],
+      containerFillPercentage: 0,
+      weightCapacityPercentage: 0,
+      totalWeight: 0
+    });
+    return;
+  }
+  
   try {
-    const { items, container } = event.data;
+    // Select the appropriate algorithm
+    const selectedAlgorithm = algorithms[algorithm] || algorithms.default;
     
-    if (!items || !container) {
-      throw new Error('Missing required data: items or container');
-    }
+    // Start the packing algorithm
+    console.log(`Starting packing algorithm in worker: ${algorithm}`);
     
-    // Count total items including quantities
-    const totalItemCount = items.reduce((total: number, item: CargoItem) => total + (item.quantity || 1), 0);
-    
-    console.log('Worker starting packing algorithm with:', {
-      uniqueItemCount: items.length,
-      totalItemCount: totalItemCount,
-      containerDimensions: `${container.length}x${container.width}x${container.height}`
+    // Send initial progress update
+    self.postMessage({ 
+      type: 'progress', 
+      value: 0,
+      packedItems: [],
+      unpackedItems: [],
+      containerFillPercentage: 0,
+      weightCapacityPercentage: 0,
+      totalWeight: 0
     });
     
-    const result = packItems(items, container);
+    // Run the selected algorithm
+    const result = selectedAlgorithm(items, container);
+    
+    // Ensure the result has all required properties
+    const validatedResult = {
+      ...result,
+      packedItems: result.packedItems || [],
+      unpackedItems: result.unpackedItems || [],
+      containerFillPercentage: result.containerFillPercentage || 0,
+      weightCapacityPercentage: result.weightCapacityPercentage || 0,
+      totalWeight: result.totalWeight || 0
+    };
+    
+    // Send the result back to the main thread
+    console.log('Packing complete, sending result back with validated data');
     
     // Consolidate unpacked items by grouping them back by their original ID
     const consolidatedUnpacked: { [key: string]: CargoItem & { quantity: number } } = {};
     
-    result.unpackedItems.forEach(item => {
-      // Extract the original item ID (remove the -0, -1, etc. suffix)
+    validatedResult.unpackedItems.forEach((item: CargoItem) => {
+      // Extract the original item ID (before the dash)
       const originalId = item.id.split('-')[0];
       
       if (consolidatedUnpacked[originalId]) {
         consolidatedUnpacked[originalId].quantity += 1;
       } else {
-        // Find the original item to get its properties
-        const originalItem = items.find((i: CargoItem) => i.id === originalId);
-        if (originalItem) {
-          consolidatedUnpacked[originalId] = {
-            ...originalItem,
-            quantity: 1
-          };
-        }
+        consolidatedUnpacked[originalId] = {
+          ...item,
+          id: originalId,
+          quantity: 1
+        };
       }
     });
     
-    // Replace the unpacked items with the consolidated list
-    result.unpackedItems = Object.values(consolidatedUnpacked);
-    
-    console.log('Worker completed packing algorithm with result:', {
-      packedItems: result.packedItems.length,
-      unpackedItems: result.unpackedItems.length,
-      fillPercentage: result.containerFillPercentage.toFixed(2) + '%'
+    // Update the result with consolidated unpacked items
+    const finalUnpackedItems = Object.values(consolidatedUnpacked);
+    self.postMessage({
+      ...validatedResult,
+      unpackedItems: finalUnpackedItems
     });
     
-    self.postMessage(result);
+    console.log('Worker completed packing algorithm with result:', {
+      packedItems: validatedResult.packedItems.length,
+      unpackedItems: validatedResult.unpackedItems.length,
+      fillPercentage: validatedResult.containerFillPercentage.toFixed(2) + '%'
+    });
   } catch (error: unknown) {
     console.error('Worker encountered an error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';

@@ -11,7 +11,7 @@ import { Container, PackedResult, PackedItem } from '../types';
 import ContainerModel from './three/ContainerModel';
 import PackedItems from './three/PackedItems';
 import ErrorBoundary from './ErrorBoundary';
-import { Box, BarChart3, Weight, PackageCheck, RotateCcw, Maximize } from 'lucide-react';
+import { Box, BarChart3, Weight, PackageCheck, RotateCcw, Maximize, RotateCw } from 'lucide-react';
 
 interface VisualizationProps {
   container: Container;
@@ -62,6 +62,14 @@ const Visualization: React.FC<VisualizationProps> = ({ container, packedResult, 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hoveredItem, setHoveredItem] = useState<PackedItem | null>(null);
   const [autoRotate, setAutoRotate] = useState<boolean>(false);
+  const [loadingProgress, setLoadingProgress] = useState<number>(0);
+  
+  // Update loading progress when packedResult changes
+  useEffect(() => {
+    if (packedResult?.progress) {
+      setLoadingProgress(packedResult.progress);
+    }
+  }, [packedResult]);
 
   useEffect(() => {
     const canvas = document.querySelector('canvas');
@@ -74,9 +82,9 @@ const Visualization: React.FC<VisualizationProps> = ({ container, packedResult, 
   const fillPercentage = packedResult?.containerFillPercentage || 0;
   const weightPercentage = packedResult?.weightCapacityPercentage || 0;
   
-  // Calculate unloaded items
-  const unloadedCount = packedResult?.unpackedItems.length || 0;
-  const totalItems = (packedResult?.packedItems.length || 0) + unloadedCount;
+  // Calculate unloaded items with safe null checks
+  const unloadedCount = packedResult?.unpackedItems?.length || 0;
+  const totalItems = (packedResult?.packedItems?.length || 0) + unloadedCount;
 
   return (
     <div className="card overflow-hidden flex flex-col">
@@ -174,7 +182,7 @@ const Visualization: React.FC<VisualizationProps> = ({ container, packedResult, 
         {/* Camera controls overlay */}
         <div className="absolute bottom-4 right-4 flex flex-col gap-2">
           <button 
-            className="p-2 bg-black/30 backdrop-blur-sm rounded-full hover:bg-accent/20 transition-colors"
+            className="p-2 bg-black/30 backdrop-blur-sm rounded-full hover:bg-accent/20 transition-colors flex items-center justify-center"
             onClick={() => {
               const controls = document.querySelector('canvas')?.parentElement?.querySelector('.drei-controls');
               if (controls) {
@@ -186,17 +194,17 @@ const Visualization: React.FC<VisualizationProps> = ({ container, packedResult, 
           >
             <RotateCcw size={18} className="text-white" />
           </button>
+          
           <button 
-            className="p-2 bg-black/30 backdrop-blur-sm rounded-full hover:bg-accent/20 transition-colors"
+            className="p-2 bg-black/30 backdrop-blur-sm rounded-full hover:bg-accent/20 transition-colors flex items-center justify-center"
             onClick={() => setAutoRotate(!autoRotate)}
             title={autoRotate ? "Stop rotation" : "Auto rotate"}
           >
-            <div className={`${autoRotate ? 'text-accent' : 'text-white'}`}>
-              <RotateCcw size={18} />
-            </div>
+            <RotateCw size={18} className={`${autoRotate ? 'text-accent' : 'text-white'}`} />
           </button>
+          
           <button 
-            className="p-2 bg-black/30 backdrop-blur-sm rounded-full hover:bg-accent/20 transition-colors"
+            className="p-2 bg-black/30 backdrop-blur-sm rounded-full hover:bg-accent/20 transition-colors flex items-center justify-center"
             onClick={() => {
               const canvas = document.querySelector('canvas');
               if (canvas && canvas.parentElement) {
@@ -212,6 +220,22 @@ const Visualization: React.FC<VisualizationProps> = ({ container, packedResult, 
             <Maximize size={18} className="text-white" />
           </button>
         </div>
+        
+        {/* Real-time packing progress indicator */}
+        {packedResult?.type === 'item_packed' && loadingProgress > 0 && loadingProgress < 100 && (
+          <div className="absolute bottom-20 right-4 bg-black/30 backdrop-blur-sm p-3 rounded-lg w-48">
+            <div className="flex justify-between text-xs text-white mb-2">
+              <span>Packing in progress...</span>
+              <span>{Math.round(loadingProgress)}%</span>
+            </div>
+            <div className="w-full bg-gray-600 rounded-full h-2">
+              <div 
+                className="bg-accent h-2 rounded-full transition-all duration-300 ease-in-out" 
+                style={{ width: `${loadingProgress}%` }}
+              ></div>
+            </div>
+          </div>
+        )}
         
         {!packedResult && (
           <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-40 text-white">

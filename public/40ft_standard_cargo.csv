@@ -1,0 +1,14 @@
+name,length,width,height,weight,color,quantity,fragile,rotatable
+Standard Pallet,120,100,120,500,#FF5757,6,false,true
+Large Machinery,200,150,120,1000,#5271FF,2,false,false
+Office Furniture,180,80,90,150,#7ED957,5,false,true
+Fragile Electronics,100,80,60,40,#FF66C4,8,true,true
+Glass Panels,200,150,10,80,#00D2D3,4,true,false
+Heavy Equipment,150,120,100,800,#FF914D,3,false,true
+Medical Supplies,90,70,60,30,#8C52FF,10,true,true
+Automotive Parts,120,100,80,200,#00C49A,5,false,true
+Retail Displays,150,100,200,120,#43D9D9,3,false,true
+Boxed Appliances,120,80,90,100,#FFA502,4,false,true
+Industrial Tools,100,80,70,150,#FF5DCD,6,false,true
+Computer Servers,80,60,40,50,#6C5CE7,8,true,false
+Packaged Furniture,200,120,80,120,#1DD1A1,3,false,true

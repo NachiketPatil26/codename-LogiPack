@@ -76,16 +76,20 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
     // Create constraints array based on checkboxes
     const constraints: ItemConstraint[] = [];
     
+    // Add fragile constraint if checked
     if (data.isFragile) {
       constraints.push({
         type: ConstraintType.FRAGILE
       });
+      console.log('Adding fragile constraint');
     }
     
-    if (!data.isRotatable) {
+    // Add must-be-upright constraint if not rotatable
+    if (data.isRotatable === false) {
       constraints.push({
         type: ConstraintType.MUST_BE_UPRIGHT
       });
+      console.log('Adding non-rotatable constraint');
     }
     
     // Create a new cargo item with the current data
@@ -100,20 +104,29 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
       constraints: constraints.length > 0 ? constraints : undefined
     };
     
+    console.log('Creating item with constraints:', constraints);
+    
     // Add the item(s) based on quantity
+    const timestamp = Date.now();
+    
     if (quantity === 1) {
-      onAddItem({
+      const newItem = {
         ...baseItem,
-        id: `item-${Date.now()}`
-      });
+        id: `item-${timestamp}`
+      };
+      console.log('Adding single item:', newItem);
+      onAddItem(newItem);
     } else {
       // Create multiple items with incrementing names
+      console.log(`Creating ${quantity} items`);
       for (let i = 0; i < quantity; i++) {
-        onAddItem({
+        const newItem = {
           ...baseItem,
-          id: `item-${Date.now()}-${i}`,
+          id: `item-${timestamp}-${i}`,
           name: `${data.name} #${i + 1}`
-        });
+        };
+        console.log(`Adding item ${i+1}:`, newItem);
+        onAddItem(newItem);
       }
     }
     
@@ -225,12 +238,22 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
           // Constraints
           const constraints: ItemConstraint[] = [];
           
-          if (fragileIndex >= 0 && values[fragileIndex]?.toLowerCase() === 'true') {
-            constraints.push({ type: ConstraintType.FRAGILE });
+          // Check if item is fragile
+          if (fragileIndex >= 0) {
+            const isFragile = values[fragileIndex]?.toLowerCase();
+            if (isFragile === 'true' || isFragile === 'yes' || isFragile === '1') {
+              constraints.push({ type: ConstraintType.FRAGILE });
+              console.log(`Row ${i}: Item is fragile`);
+            }
           }
           
-          if (rotatableIndex >= 0 && values[rotatableIndex]?.toLowerCase() === 'false') {
-            constraints.push({ type: ConstraintType.MUST_BE_UPRIGHT });
+          // Check if item is rotatable (if false, it must be upright)
+          if (rotatableIndex >= 0) {
+            const isRotatable = values[rotatableIndex]?.toLowerCase();
+            if (isRotatable === 'false' || isRotatable === 'no' || isRotatable === '0') {
+              constraints.push({ type: ConstraintType.MUST_BE_UPRIGHT });
+              console.log(`Row ${i}: Item is not rotatable`);
+            }
           }
           
           // Create a unique item with a stable ID
@@ -696,7 +719,21 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
                 {cargoItems.map((item) => (
                   <tr key={item.id} className="hover:bg-muted/50">
                     <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
-                      {item.name}
+                      <div className="flex items-center gap-1">
+                        {item.name}
+                        {item.constraints?.some(c => c.type === ConstraintType.FRAGILE) && (
+                          <span title="Fragile" className="text-amber-500">
+                            <AlertTriangle size={14} />
+                          </span>
+                        )}
+                        {item.constraints?.some(c => c.type === ConstraintType.MUST_BE_UPRIGHT) && (
+                          <span title="Non-Rotatable" className="text-blue-500">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M12 22 9-9"/><path d="M10.5 5.5 8 3H5v3l2.5 2.5"/>
+                            </svg>
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
                       {item.length} × {item.width} × {item.height} cm
@@ -704,22 +741,25 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
                     <td className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
                       {item.weight} kg
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm">
-                      <div className="flex items-center gap-2">
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
+                      <div className="flex items-center">
                         <div 
-                          className="w-4 h-4 rounded-full border" 
-                          style={{ backgroundColor: item.color || '#6366f1' }}
-                        ></div>
-                        <span className="text-xs text-muted-foreground">{item.color || '#6366f1'}</span>
+                          className="w-4 h-4 rounded-full mr-2 border border-border shadow-sm"
+                          style={{ backgroundColor: item.color }}
+                        />
+                        <span>{item.color}</span>
                       </div>
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm">
-                      <button
-                        onClick={() => onRemoveItem(item.id)}
-                        className="text-destructive hover:text-destructive/80 transition-colors"
-                      >
-                        <Trash2 size={16} />
-                      </button>
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => onRemoveItem(item.id)}
+                          className="p-1.5 rounded-md hover:bg-destructive/10 hover:text-destructive transition-colors"
+                          title="Remove item"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

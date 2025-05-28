@@ -1,7 +1,11 @@
 import React from 'react';
-import { Package, FileText, Save, Github } from 'lucide-react';
+import { Package, FileText, Save, Github, Code } from 'lucide-react';
 
-const Header: React.FC = () => {
+interface HeaderProps {
+  onOpenDeveloperUI?: () => void;
+}
+
+const Header: React.FC<HeaderProps> = ({ onOpenDeveloperUI }) => {
   return (
     <header className="bg-background border-b border-border sticky top-0 z-10 shadow-sm">
       <div className="container mx-auto px-4 py-3">
@@ -41,6 +45,17 @@ const Header: React.FC = () => {
               <Save size={16} />
               <span>Save Plan</span>
             </button>
+            
+            {onOpenDeveloperUI && (
+              <button 
+                onClick={onOpenDeveloperUI}
+                className="bg-gray-700 text-white px-3 py-1.5 rounded-md hover:bg-gray-600 transition-colors text-sm flex items-center gap-1.5 shadow-sm"
+                title="Open Developer Tools"
+              >
+                <Code size={16} />
+                <span>Dev Tools</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
