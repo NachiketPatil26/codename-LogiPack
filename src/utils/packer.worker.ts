@@ -808,6 +808,8 @@ const algorithms: Record<string, PackingAlgorithm> = {
     let totalVolumePacked = 0;
     let totalWeight = 0;
     
+    // For real-time visualization - will be used in the packing loop
+    
     // Define a space (free area) in the container
     type Space = {
       x: number; // x-coordinate (length)
@@ -1086,10 +1088,32 @@ const algorithms: Record<string, PackingAlgorithm> = {
       return result;
     };
     
+    // For real-time visualization
+    let lastUpdateTime = Date.now();
+    const updateInterval = 100; // Update every 100ms
+    
     // Process each item
     for (let i = 0; i < sortedItems.length; i++) {
       const item = sortedItems[i];
       let packed = false;
+      
+      // Send real-time updates for visualization
+      const currentTime = Date.now();
+      if (currentTime - lastUpdateTime > updateInterval) {
+        lastUpdateTime = currentTime;
+        const progress = (i / sortedItems.length) * 100;
+        
+        // Send current packing state for visualization
+        self.postMessage({
+          type: 'item_packed',
+          packedItems: packedItems,
+          unpackedItems: sortedItems.slice(i),
+          containerFillPercentage: (totalVolumePacked / containerVolume) * 100,
+          weightCapacityPercentage: (totalWeight / container.maxWeight) * 100,
+          totalWeight: totalWeight,
+          progress: progress
+        });
+      }
       
       // Check if adding this item would exceed weight capacity
       if (totalWeight + item.weight > container.maxWeight) {
@@ -1211,11 +1235,895 @@ const algorithms: Record<string, PackingAlgorithm> = {
     return packItems(items, container);
   },
   
-  // Genetic Algorithm
+  // Biased Random Key Genetic Algorithm (BRKGA) for 3D Bin Packing
   genetic: (items: CargoItem[], container: Container): PackedResult => {
-    console.log('Using Genetic algorithm');
-    // Placeholder implementation
-    return packItems(items, container);
+    console.log('Using Biased Random Key Genetic Algorithm for 3D Bin Packing');
+    
+    // Initialize container dimensions
+    const containerLength = container.length;
+    const containerWidth = container.width;
+    const containerHeight = container.height;
+    const containerVolume = containerLength * containerWidth * containerHeight;
+    
+    // Track best solution found
+    let bestPackedItems: PackedItem[] = [];
+    let bestUnpackedItems: CargoItem[] = [];
+    let bestWeight = 0;
+    let bestFitness = 0;
+    
+    // BRKGA Parameters - optimized for better performance
+    const populationSize = 120; // Increased population size for better exploration
+    const generations = 60; // More generations for better convergence
+    const elitePercentage = 0.3; // 30% of population are elite (increased from 20%)
+    const mutantPercentage = 0.15; // 15% of population are mutants (reduced from 20%)
+    const eliteBias = 0.8; // 80% chance to inherit from elite parent (increased from 70%)
+    
+    // Calculate number of individuals in each group
+    const numElites = Math.floor(populationSize * elitePercentage);
+    const numMutants = Math.floor(populationSize * mutantPercentage);
+    const numCrossovers = populationSize - numElites - numMutants;
+    
+    // Number of items to pack
+    const numItems = items.length;
+    
+    // Define a chromosome as a vector of random keys
+    type BRKGAChromosome = {
+      // Random keys (values between 0 and 1)
+      keys: number[];
+      // Decoded values
+      packingSequence: number[];
+      orientations: number[];
+      // Fitness and results
+      fitness: number;
+      packedItems: PackedItem[];
+      unpackedItems: CargoItem[];
+      volumePacked: number;
+      totalWeight: number;
+    };
+    
+    // Define possible orientations (6 possible ways to orient a box)
+    const possibleOrientations = [
+      // [length, height, width] - original orientation
+      [0, 1, 2],
+      // [length, width, height] - rotate around x-axis
+      [0, 2, 1],
+      // [height, length, width] - rotate around y-axis
+      [1, 0, 2],
+      // [height, width, length] - rotate around y-axis and x-axis
+      [1, 2, 0],
+      // [width, length, height] - rotate around z-axis
+      [2, 0, 1],
+      // [width, height, length] - rotate around z-axis and x-axis
+      [2, 1, 0]
+    ];
+    
+    // Function to create a new random chromosome
+    const createRandomChromosome = (): BRKGAChromosome => {
+      // Create random keys (2 * numItems: first half for sequence, second half for orientation)
+      const keys = Array.from({ length: 2 * numItems }, () => Math.random());
+      
+      // Decode the keys
+      const packingSequence = decodePackingSequence(keys);
+      const orientations = decodeOrientations(keys);
+      
+      return {
+        keys,
+        packingSequence,
+        orientations,
+        fitness: 0,
+        packedItems: [],
+        unpackedItems: [...items],
+        volumePacked: 0,
+        totalWeight: 0
+      };
+    };
+    
+    // Function to decode the packing sequence from the first half of the keys
+    const decodePackingSequence = (keys: number[]): number[] => {
+      // Create array of indices
+      const indices = Array.from({ length: numItems }, (_, i) => i);
+      
+      // Sort indices based on the first half of the keys
+      return indices.sort((a, b) => keys[a] - keys[b]);
+    };
+    
+    // Function to decode the orientations from the second half of the keys
+    const decodeOrientations = (keys: number[]): number[] => {
+      return Array.from({ length: numItems }, (_, i) => {
+        // Map the key value to an orientation index (0-5)
+        const orientationIndex = Math.floor(keys[numItems + i] * possibleOrientations.length);
+        return orientationIndex;
+      });
+    };
+    
+    // Initialize population with random chromosomes
+    let population: BRKGAChromosome[] = Array.from({ length: populationSize }, () => createRandomChromosome());
+    
+    // Function to evaluate fitness of a chromosome (higher is better)
+    const evaluateFitness = (chromosome: BRKGAChromosome): void => {
+      // Create ordered items based on packing sequence and orientations
+      const orderedItems = chromosome.packingSequence.map(idx => {
+        // Get the original item
+        const originalItem = items[idx];
+        
+        // Get the orientation for this item
+        const orientationIdx = chromosome.orientations[idx];
+        const orientation = possibleOrientations[orientationIdx];
+        
+        // Create a new item with potentially rotated dimensions
+        const itemDimensions = [originalItem.length, originalItem.height, originalItem.width];
+        
+        // Calculate rotation angles based on orientation
+        let rotationX = 0;
+        let rotationY = 0;
+        let rotationZ = 0;
+        
+        // Set rotation angles based on the orientation
+        // This maps the orientation index to actual rotation angles in degrees
+        switch(orientationIdx) {
+          case 1: // length-width-height (rotate 90° around Z)
+            rotationZ = 90;
+            break;
+          case 2: // height-length-width (rotate 90° around X)
+            rotationX = 90;
+            break;
+          case 3: // width-height-length (rotate 90° around Y)
+            rotationY = 90;
+            break;
+          case 4: // height-width-length (rotate 90° around X, then 90° around Y)
+            rotationX = 90;
+            rotationY = 90;
+            break;
+          case 5: // width-length-height (rotate 90° around Z, then 90° around X)
+            rotationZ = 90;
+            rotationX = 90;
+            break;
+          // case 0 is the default orientation (length-height-width), no rotation needed
+        }
+        
+        // Create a copy of the item with rotated dimensions and rotation information
+        return {
+          ...originalItem,
+          length: itemDimensions[orientation[0]],
+          height: itemDimensions[orientation[1]],
+          width: itemDimensions[orientation[2]],
+          // Store the rotation information to be used when creating packed items
+          _rotation: { x: rotationX, y: rotationY, z: rotationZ },
+          _orientationIdx: orientationIdx
+        };
+      });
+      
+      // Use a modified version of the Extreme Point algorithm to pack items
+      const result = packWithSequence(orderedItems, container);
+      
+      // Update chromosome with results
+      chromosome.packedItems = result.packedItems;
+      chromosome.unpackedItems = result.unpackedItems;
+      chromosome.volumePacked = result.packedItems.reduce((sum, item) => {
+        return sum + (item.length * item.width * item.height);
+      }, 0);
+      chromosome.totalWeight = result.packedItems.reduce((sum, item) => sum + item.weight, 0);
+      
+      // Calculate fitness (volume utilization percentage)
+      chromosome.fitness = (chromosome.volumePacked / containerVolume) * 100;
+    };
+    
+    // Function to pack items using a specific sequence - optimized for 3D bin packing
+    const packWithSequence = (orderedItems: CargoItem[], container: Container): PackedResult => {
+      const packedItems: PackedItem[] = [];
+      const unpackedItems: CargoItem[] = [];
+      let totalVolumePacked = 0;
+      let totalWeight = 0;
+      
+      // Define a space (free area) in the container
+      type Space = {
+        x: number; // x-coordinate (length)
+        y: number; // y-coordinate (height)
+        z: number; // z-coordinate (width)
+        length: number; // length dimension (along x-axis)
+        height: number; // height dimension (along y-axis)
+        width: number; // width dimension (along z-axis)
+        score?: number; // Score for space selection heuristic
+      };
+      
+      // Initialize with one space representing the entire container
+      let spaces: Space[] = [
+        {
+          x: 0,
+          y: 0,
+          z: 0,
+          length: containerLength,
+          height: containerHeight,
+          width: containerWidth
+        }
+      ];
+      
+      // Function to check if an item fits in a space
+      const itemFitsInSpace = (item: CargoItem, space: Space): boolean => {
+        return (
+          item.length <= space.length &&
+          item.height <= space.height &&
+          item.width <= space.width
+        );
+      };
+      
+      // Function to check if an item would be outside the container
+      const itemOutsideContainer = (item: CargoItem, x: number, y: number, z: number): boolean => {
+        // Use a strict boundary check with a small negative epsilon to ensure items stay inside
+        const epsilon = -0.001; // Negative epsilon to make boundary check stricter
+        return (
+          x < 0 || x + item.length > containerLength + epsilon ||
+          y < 0 || y + item.height > containerHeight + epsilon ||
+          z < 0 || z + item.width > containerWidth + epsilon
+        );
+      };
+      
+      // Function to check if an item overlaps with already packed items
+      const itemOverlapsWithPacked = (item: CargoItem, x: number, y: number, z: number): boolean => {
+        // Use a stricter overlap check with a larger epsilon
+        const epsilon = 0.01; // Larger epsilon for more reliable overlap detection
+        
+        for (const packedItem of packedItems) {
+          const px = packedItem.position.x;
+          const py = packedItem.position.y;
+          const pz = packedItem.position.z;
+          
+          // Check if bounding boxes intersect with a safety margin
+          const overlapX = Math.max(0, Math.min(x + item.length, px + packedItem.length) - Math.max(x, px));
+          const overlapY = Math.max(0, Math.min(y + item.height, py + packedItem.height) - Math.max(y, py));
+          const overlapZ = Math.max(0, Math.min(z + item.width, pz + packedItem.width) - Math.max(z, pz));
+          
+          // If there's a significant overlap in all three dimensions, items are overlapping
+          if (overlapX > epsilon && overlapY > epsilon && overlapZ > epsilon) {
+            return true; // Overlap detected
+          }
+        }
+        return false; // No overlap
+      };
+      
+      // Function to find the lowest possible position for an item (to prevent floating)
+      const findLowestPosition = (item: CargoItem, x: number, z: number): number => {
+        let lowestY = 0; // Start at the bottom of the container
+        
+        // Calculate the area of the item's base
+        const itemBaseArea = item.length * item.width;
+        
+        // Check if the item would be supported by any packed item
+        for (const packedItem of packedItems) {
+          const px = packedItem.position.x;
+          const py = packedItem.position.y;
+          const pz = packedItem.position.z;
+          
+          // Check if there's an overlap in x and z coordinates
+          if (x < px + packedItem.length && x + item.length > px &&
+              z < pz + packedItem.width && z + item.width > pz) {
+            // Calculate the overlapping area
+            const overlapX = Math.min(x + item.length, px + packedItem.length) - Math.max(x, px);
+            const overlapZ = Math.min(z + item.width, pz + packedItem.width) - Math.max(z, pz);
+            const overlapArea = overlapX * overlapZ;
+            
+            // If the overlap is significant (at least 30% of the item's base), consider it supported
+            if (overlapArea >= 0.3 * itemBaseArea) {
+              const possibleY = py + packedItem.height;
+              if (possibleY > lowestY) {
+                lowestY = possibleY;
+              }
+            }
+          }
+        }
+        
+        return lowestY;
+      };
+      
+      // Function to calculate how many surfaces of the item would be touching other items or container walls
+      const calculateTouchingFaces = (item: CargoItem, x: number, y: number, z: number): number => {
+        let touchingFaces = 0;
+        
+        // Check if touching the floor
+        if (y === 0) touchingFaces++;
+        
+        // Check if touching the left wall
+        if (x === 0) touchingFaces++;
+        
+        // Check if touching the back wall
+        if (z === 0) touchingFaces++;
+        
+        // Check if touching the right wall
+        if (x + item.length === containerLength) touchingFaces++;
+        
+        // Check if touching the front wall
+        if (z + item.width === containerWidth) touchingFaces++;
+        
+        // Check if touching the ceiling
+        if (y + item.height === containerHeight) touchingFaces++;
+        
+        // Check if touching other items
+        for (const packedItem of packedItems) {
+          const px = packedItem.position.x;
+          const py = packedItem.position.y;
+          const pz = packedItem.position.z;
+          
+          // Check if touching on the right face
+          if (x + item.length === px && 
+              y < py + packedItem.height && y + item.height > py &&
+              z < pz + packedItem.width && z + item.width > pz) {
+            touchingFaces++;
+          }
+          
+          // Check if touching on the left face
+          if (px + packedItem.length === x && 
+              y < py + packedItem.height && y + item.height > py &&
+              z < pz + packedItem.width && z + item.width > pz) {
+            touchingFaces++;
+          }
+          
+          // Check if touching on the top face
+          if (y + item.height === py && 
+              x < px + packedItem.length && x + item.length > px &&
+              z < pz + packedItem.width && z + item.width > pz) {
+            touchingFaces++;
+          }
+          
+          // Check if touching on the bottom face
+          if (py + packedItem.height === y && 
+              x < px + packedItem.length && x + item.length > px &&
+              z < pz + packedItem.width && z + item.width > pz) {
+            touchingFaces++;
+          }
+          
+          // Check if touching on the front face
+          if (z + item.width === pz && 
+              x < px + packedItem.length && x + item.length > px &&
+              y < py + packedItem.height && y + item.height > py) {
+            touchingFaces++;
+          }
+          
+          // Check if touching on the back face
+          if (pz + packedItem.width === z && 
+              x < px + packedItem.length && x + item.length > px &&
+              y < py + packedItem.height && y + item.height > py) {
+            touchingFaces++;
+          }
+        }
+        
+        return touchingFaces;
+      };
+      
+      // Function to score a potential placement (higher is better)
+      const scorePlacement = (item: CargoItem, space: Space, x: number, y: number, z: number): number => {
+        // Prioritize placements with a more sophisticated scoring system:
+        
+        // 1. Maximize contact with container walls and other items (most important)
+        const touchingFaces = calculateTouchingFaces(item, x, y, z);
+        const touchingScore = touchingFaces * 300; // Increased weight
+        
+        // 2. Prefer corner placements (items touching multiple walls)
+        let cornerScore = 0;
+        if (x === 0) cornerScore += 150;
+        if (y === 0) cornerScore += 150;
+        if (z === 0) cornerScore += 150;
+        if (x + item.length >= containerLength - 0.01) cornerScore += 100;
+        if (y + item.height >= containerHeight - 0.01) cornerScore += 50; // Less weight for top corners
+        if (z + item.width >= containerWidth - 0.01) cornerScore += 100;
+        
+        // 3. Minimize the center of gravity (prefer items closer to the bottom)
+        const centerY = y + (item.height / 2);
+        const gravityScore = 200 * (1 - (centerY / containerHeight));
+        
+        // 4. Minimize fragmentation of remaining space
+        const spaceUtilization = (item.length * item.width * item.height) / 
+                               (space.length * space.height * space.width);
+        const utilizationScore = spaceUtilization * 250;
+        
+        // 5. Prefer placements closer to already packed items
+        let proximityScore = 0;
+        for (const packedItem of packedItems) {
+          const px = packedItem.position.x;
+          const py = packedItem.position.y;
+          const pz = packedItem.position.z;
+          
+          // Calculate distance between centers of items
+          const distance = Math.sqrt(
+            Math.pow((x + item.length/2) - (px + packedItem.length/2), 2) +
+            Math.pow((y + item.height/2) - (py + packedItem.height/2), 2) +
+            Math.pow((z + item.width/2) - (pz + packedItem.width/2), 2)
+          );
+          
+          // Closer items get higher scores
+          proximityScore += 100 / (1 + distance);
+        }
+        // Cap the proximity score to prevent it from dominating
+        proximityScore = Math.min(proximityScore, 200);
+        
+        // 6. Minimize the maximum coordinate (keep items closer to origin)
+        const maxCoord = Math.max(x + item.length, y + item.height, z + item.width);
+        const maxCoordScore = 100 / (1 + maxCoord);
+        
+        // Combine all scores with appropriate weights
+        return touchingScore + cornerScore + gravityScore + utilizationScore + proximityScore + maxCoordScore;
+      };
+      
+      // Function to split a space after placing an item - using the Guillotine cut approach
+      const splitSpace = (space: Space, item: CargoItem, x: number, y: number, z: number): Space[] => {
+        const newSpaces: Space[] = [];
+        
+        // Calculate the coordinates of the placed item relative to the space
+        const relX = x - space.x;
+        const relY = y - space.y;
+        const relZ = z - space.z;
+        
+        // Space to the right of the item (along x-axis/length)
+        if (relX + item.length < space.length) {
+          newSpaces.push({
+            x: x + item.length,
+            y: space.y,
+            z: space.z,
+            length: space.length - (relX + item.length),
+            height: space.height,
+            width: space.width
+          });
+        }
+        
+        // Space above the item (along y-axis/height)
+        if (relY + item.height < space.height) {
+          newSpaces.push({
+            x: space.x,
+            y: y + item.height,
+            z: space.z,
+            length: space.length,
+            height: space.height - (relY + item.height),
+            width: space.width
+          });
+        }
+        
+        // Space in front of the item (along z-axis/width)
+        if (relZ + item.width < space.width) {
+          newSpaces.push({
+            x: space.x,
+            y: space.y,
+            z: z + item.width,
+            length: space.length,
+            height: space.height,
+            width: space.width - (relZ + item.width)
+          });
+        }
+        
+        // Space to the left of the item
+        if (relX > 0) {
+          newSpaces.push({
+            x: space.x,
+            y: space.y,
+            z: space.z,
+            length: relX,
+            height: space.height,
+            width: space.width
+          });
+        }
+        
+        // Space below the item
+        if (relY > 0) {
+          newSpaces.push({
+            x: space.x,
+            y: space.y,
+            z: space.z,
+            length: space.length,
+            height: relY,
+            width: space.width
+          });
+        }
+        
+        // Space behind the item
+        if (relZ > 0) {
+          newSpaces.push({
+            x: space.x,
+            y: space.y,
+            z: space.z,
+            length: space.length,
+            height: space.height,
+            width: relZ
+          });
+        }
+        
+        // Filter out spaces that are too small to be useful
+        const minDimension = 0.1; // Minimum useful dimension in units
+        return newSpaces.filter(space => 
+          space.length >= minDimension && 
+          space.height >= minDimension && 
+          space.width >= minDimension
+        );
+      };
+      
+      // Function to merge spaces for better space utilization
+      const mergeSpaces = (spaceList: Space[]): Space[] => {
+        if (spaceList.length <= 1) return spaceList;
+        
+        // First, remove any spaces that are completely contained within others
+        let result = [...spaceList];
+        
+        // Remove fully contained spaces
+        for (let i = result.length - 1; i >= 0; i--) {
+          if (i >= result.length) continue; // Safety check
+          
+          const current = result[i];
+          for (let j = 0; j < result.length; j++) {
+            if (i === j || i >= result.length) continue; // Safety check
+            
+            const other = result[j];
+            if (current.x >= other.x && 
+                current.y >= other.y && 
+                current.z >= other.z && 
+                current.x + current.length <= other.x + other.length &&
+                current.y + current.height <= other.y + other.height &&
+                current.z + current.width <= other.z + other.width) {
+              // Current space is fully contained in other space, remove it
+              result.splice(i, 1);
+              break;
+            }
+          }
+        }
+        
+        // Try to merge spaces that are adjacent and have the same dimensions on 2 axes
+        let merged = true;
+        while (merged && result.length > 1) {
+          merged = false;
+          
+          for (let i = 0; i < result.length; i++) {
+            for (let j = i + 1; j < result.length; j++) {
+              const a = result[i];
+              const b = result[j];
+              
+              // Check if spaces can be merged along X axis
+              if (a.y === b.y && a.z === b.z && 
+                  a.height === b.height && a.width === b.width) {
+                if (a.x + a.length === b.x) { // A is before B
+                  a.length += b.length;
+                  result.splice(j, 1);
+                  merged = true;
+                  break;
+                } else if (b.x + b.length === a.x) { // B is before A
+                  a.x = b.x;
+                  a.length += b.length;
+                  result.splice(j, 1);
+                  merged = true;
+                  break;
+                }
+              }
+              
+              // Check if spaces can be merged along Y axis
+              if (a.x === b.x && a.z === b.z && 
+                  a.length === b.length && a.width === b.width) {
+                if (a.y + a.height === b.y) { // A is below B
+                  a.height += b.height;
+                  result.splice(j, 1);
+                  merged = true;
+                  break;
+                } else if (b.y + b.height === a.y) { // B is below A
+                  a.y = b.y;
+                  a.height += b.height;
+                  result.splice(j, 1);
+                  merged = true;
+                  break;
+                }
+              }
+              
+              // Check if spaces can be merged along Z axis
+              if (a.x === b.x && a.y === b.y && 
+                  a.length === b.length && a.height === b.height) {
+                if (a.z + a.width === b.z) { // A is behind B
+                  a.width += b.width;
+                  result.splice(j, 1);
+                  merged = true;
+                  break;
+                } else if (b.z + b.width === a.z) { // B is behind A
+                  a.z = b.z;
+                  a.width += b.width;
+                  result.splice(j, 1);
+                  merged = true;
+                  break;
+                }
+              }
+            }
+            
+            if (merged) break;
+          }
+        }
+        
+        // Limit the number of spaces to prevent performance issues
+        if (result.length > 50) {
+          // Sort by volume and keep only the 50 largest spaces
+          result.sort((a, b) => {
+            const volumeA = a.length * a.height * a.width;
+            const volumeB = b.length * b.height * b.width;
+            return volumeB - volumeA; // Descending order
+          });
+          result = result.slice(0, 50);
+        }
+        
+        return result;
+      };
+      
+      // Try to pack each item
+      let lastUpdateTime = Date.now();
+      const updateInterval = 100; // Update every 100ms
+      
+      for (let i = 0; i < orderedItems.length; i++) {
+        const item = orderedItems[i];
+        let packed = false;
+        
+        // For each item, evaluate all possible placements and choose the best one
+        let bestSpace: Space | null = null;
+        let bestX = 0, bestY = 0, bestZ = 0;
+        let bestScore = -1;
+        
+        // Send real-time updates for visualization
+        const currentTime = Date.now();
+        if (currentTime - lastUpdateTime > updateInterval) {
+          lastUpdateTime = currentTime;
+          const progress = (i / orderedItems.length) * 100;
+          
+          // Send current packing state for visualization
+          self.postMessage({
+            type: 'item_packed',
+            packedItems: packedItems,
+            unpackedItems: unpackedItems,
+            containerFillPercentage: (totalVolumePacked / containerVolume) * 100,
+            weightCapacityPercentage: (totalWeight / container.maxWeight) * 100,
+            totalWeight: totalWeight,
+            progress: progress
+          });
+        }
+        
+        // Try to find the best space for this item
+        for (let j = 0; j < spaces.length; j++) {
+          const space = spaces[j];
+          
+          // Check if item fits in this space
+          if (itemFitsInSpace(item, space)) {
+            // Place item at the bottom-left-back corner of the space
+            let x = space.x;
+            let z = space.z;
+            
+            // Find the lowest possible y-coordinate for this item (to prevent floating)
+            let y = findLowestPosition(item, x, z);
+            
+            // Make sure the item is still within the space's height
+            if (y + item.height > space.y + space.height) {
+              continue; // This item would extend beyond the space's height, try next space
+            }
+            
+            // Double-check that the item is within container bounds
+            if (itemOutsideContainer(item, x, y, z)) {
+              continue; // Item would be outside the container, try next space
+            }
+            
+            // Check if this placement would overlap with already packed items
+            if (itemOverlapsWithPacked(item, x, y, z)) {
+              continue; // Try the next space
+            }
+            
+            // Score this placement
+            const score = scorePlacement(item, space, x, y, z);
+            
+            // Update best placement if this one is better
+            if (score > bestScore) {
+              bestScore = score;
+              bestSpace = space;
+              bestX = x;
+              bestY = y;
+              bestZ = z;
+            }
+          }
+        }
+        
+        // If we found a valid placement, use it
+        if (bestSpace !== null && bestScore >= 0) {
+          // Perform a final boundary check before adding the item
+          const finalBoundaryCheck = (
+            bestX >= 0 && bestX + item.length <= containerLength &&
+            bestY >= 0 && bestY + item.height <= containerHeight &&
+            bestZ >= 0 && bestZ + item.width <= containerWidth
+          );
+          
+          if (finalBoundaryCheck) {
+            // Add to packed items with correct rotation
+            packedItems.push({
+              id: item.id,
+              name: item.name,
+              width: item.width,
+              height: item.height,
+              length: item.length,
+              weight: item.weight,
+              color: item.color,
+              quantity: item.quantity,
+              position: { x: bestX, y: bestY, z: bestZ },
+              rotation: (item as any)._rotation ? (item as any)._rotation : { x: 0, y: 0, z: 0 }
+            });
+          } else {
+            // If the item would be outside the container, add to unpacked items instead
+            unpackedItems.push(item);
+            packed = false;
+            continue; // Skip the rest of the loop for this item
+          }
+          
+          // Update total volume and weight
+          totalVolumePacked += item.length * item.width * item.height;
+          totalWeight += item.weight;
+          
+          // Remove the used space
+          spaces = spaces.filter(s => s !== bestSpace);
+          
+          // Create new spaces after placing the item
+          const newSpaces = splitSpace(bestSpace, item, bestX, bestY, bestZ);
+          spaces.push(...newSpaces);
+          
+          // Merge spaces periodically to optimize space usage
+          if (i % 5 === 0) {
+            spaces = mergeSpaces(spaces);
+          }
+          
+          packed = true;
+        }
+        
+        // If item couldn't be packed, add to unpacked items
+        if (!packed) {
+          unpackedItems.push(item);
+        }
+      }
+      
+      return {
+        packedItems,
+        unpackedItems,
+        containerFillPercentage: (totalVolumePacked / containerVolume) * 100,
+        weightCapacityPercentage: (totalWeight / container.maxWeight) * 100,
+        totalWeight
+      };
+    };
+    
+    // Partition the population into elite and non-elite groups
+    const partitionPopulation = (population: BRKGAChromosome[]): { elites: BRKGAChromosome[], nonElites: BRKGAChromosome[] } => {
+      // Sort population by fitness (descending)
+      const sortedPopulation = [...population].sort((a, b) => b.fitness - a.fitness);
+      
+      // Split into elite and non-elite groups
+      const elites = sortedPopulation.slice(0, numElites);
+      const nonElites = sortedPopulation.slice(numElites);
+      
+      return { elites, nonElites };
+    };
+    
+    // Generate mutants (completely new random chromosomes)
+    const generateMutants = (): BRKGAChromosome[] => {
+      return Array.from({ length: numMutants }, () => createRandomChromosome());
+    };
+    
+    // Parameterized uniform crossover for BRKGA
+    const crossover = (elite: BRKGAChromosome, nonElite: BRKGAChromosome): BRKGAChromosome => {
+      // Create new keys array
+      const childKeys = Array(2 * numItems).fill(0);
+      
+      // For each gene position
+      for (let i = 0; i < 2 * numItems; i++) {
+        // Inherit from elite with probability eliteBias, otherwise from non-elite
+        if (Math.random() < eliteBias) {
+          childKeys[i] = elite.keys[i];
+        } else {
+          childKeys[i] = nonElite.keys[i];
+        }
+      }
+      
+      // Decode the keys
+      const packingSequence = decodePackingSequence(childKeys);
+      const orientations = decodeOrientations(childKeys);
+      
+      // Return the new chromosome
+      return {
+        keys: childKeys,
+        packingSequence,
+        orientations,
+        fitness: 0,
+        packedItems: [],
+        unpackedItems: [],
+        volumePacked: 0,
+        totalWeight: 0
+      };
+    };
+    
+    // Mating function to produce offspring through crossover
+    const mating = (elites: BRKGAChromosome[], nonElites: BRKGAChromosome[]): BRKGAChromosome[] => {
+      const offspring: BRKGAChromosome[] = [];
+      
+      // Generate numCrossovers offspring
+      for (let i = 0; i < numCrossovers; i++) {
+        // Select one elite and one non-elite parent randomly
+        const eliteParent = elites[Math.floor(Math.random() * elites.length)];
+        const nonEliteParent = nonElites[Math.floor(Math.random() * nonElites.length)];
+        
+        // Perform crossover
+        const child = crossover(eliteParent, nonEliteParent);
+        offspring.push(child);
+      }
+      
+      return offspring;
+    };
+    
+    // Main BRKGA evolutionary process
+    for (let generation = 0; generation < generations; generation++) {
+      console.log(`Starting generation ${generation + 1} of ${generations}`);
+      
+      // Evaluate fitness for all chromosomes
+      for (let i = 0; i < population.length; i++) {
+        evaluateFitness(population[i]);
+        
+        // Send progress update periodically
+        if (i % 5 === 0) {
+          const progress = ((generation * populationSize + i) / (generations * populationSize)) * 100;
+          self.postMessage({
+            type: 'progress',
+            value: progress,
+            packedItems: [],
+            unpackedItems: [],
+            containerFillPercentage: 0,
+            weightCapacityPercentage: 0,
+            totalWeight: 0
+          });
+        }
+      }
+      
+      // Sort population by fitness (descending)
+      population.sort((a, b) => b.fitness - a.fitness);
+      
+      // Update best solution if we found a better one
+      if (population[0].fitness > bestFitness) {
+        bestFitness = population[0].fitness;
+        bestPackedItems = [...population[0].packedItems];
+        bestUnpackedItems = [...population[0].unpackedItems];
+        bestWeight = population[0].totalWeight;
+        
+        console.log(`New best solution found at generation ${generation + 1} with fitness ${bestFitness.toFixed(2)}%`);
+        
+        // Send update with current best solution
+        self.postMessage({
+          type: 'item_packed',
+          packedItems: bestPackedItems,
+          unpackedItems: bestUnpackedItems,
+          containerFillPercentage: bestFitness,
+          weightCapacityPercentage: (bestWeight / container.maxWeight) * 100,
+          totalWeight: bestWeight,
+          progress: ((generation + 1) / generations) * 100
+        });
+      }
+      
+      // If this is the last generation, we're done
+      if (generation === generations - 1) {
+        break;
+      }
+      
+      // Partition the population into elite and non-elite groups
+      const { elites, nonElites } = partitionPopulation(population);
+      
+      // Generate mutants (completely new random chromosomes)
+      const mutants = generateMutants();
+      
+      // Perform mating to generate offspring
+      const offspring = mating(elites, nonElites);
+      
+      // Create the next generation by combining elites, mutants, and offspring
+      population = [...elites, ...mutants, ...offspring];
+    }
+    
+    // Return the best solution found
+    console.log('BRKGA completed. Best solution found:');
+    console.log(`- Container fill: ${bestFitness.toFixed(2)}%`);
+    console.log(`- Items packed: ${bestPackedItems.length}`);
+    console.log(`- Items unpacked: ${bestUnpackedItems.length}`);
+    
+    return {
+      packedItems: bestPackedItems,
+      unpackedItems: bestUnpackedItems,
+      containerFillPercentage: bestFitness,
+      weightCapacityPercentage: (bestWeight / container.maxWeight) * 100,
+      totalWeight: bestWeight
+    };
   },
   
   // Reinforcement Deep Learning
