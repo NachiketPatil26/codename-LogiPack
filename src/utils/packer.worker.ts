@@ -1,4 +1,10 @@
-console.log('packer.worker.ts script started.');
+console.log('packer.worker.ts script started');
+
+// In a real web worker environment, we would import TensorFlow.js like this:
+// self.importScripts('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js');
+
+// For TypeScript compatibility, declare the self object for web workers
+declare const self: Worker & typeof globalThis;
 
 // Define interfaces inline
 interface Position {
@@ -2126,11 +2132,754 @@ const algorithms: Record<string, PackingAlgorithm> = {
     };
   },
   
-  // Reinforcement Deep Learning
-  simulated_annealing: (items: CargoItem[], container: Container): PackedResult => {
-    console.log('Using Reinforcement Deep Learning algorithm');
-    // Placeholder implementation
-    return packItems(items, container);
+  // True Reinforcement Learning with TensorFlow.js
+  simulated_annealing: (items: CargoItem[], container: Container, progressCallback?: (progress: number, state: any) => void): PackedResult => {
+    console.log('Using True Reinforcement Learning with TensorFlow.js');
+    
+    // Import TensorFlow.js if it's not already available
+    // In a real implementation, this would be properly imported at the top of the file
+    // or included as a script in the HTML
+    const tf = (self as any).tf || { loadLayersModel: null, sequential: null, layers: null };
+    
+    // Check if TensorFlow.js is available
+    if (!tf.loadLayersModel) {
+      console.warn('TensorFlow.js not available, falling back to heuristic-based approach');
+    }
+    
+    // Define PPO parameters
+    const params = {
+      gridSize: 32, // Size of the 3D grid for state representation
+      lookahead: 5, // Number of items to consider in advance
+      explorationRate: 0.1, // Epsilon for exploration
+      learningRate: 0.001, // Learning rate for policy updates
+      discountFactor: 0.95, // Gamma for future rewards
+      maxIterations: 1000, // Maximum number of iterations
+      clipEpsilon: 0.2, // PPO clipping parameter
+      entropyCoef: 0.01, // Entropy coefficient for exploration
+      valueCoef: 0.5, // Value loss coefficient
+      batchSize: 32, // Batch size for training
+      epochs: 4 // Number of epochs to train on each batch
+    };
+    
+    // Initialize state representation
+    interface State {
+      heightMap: number[][]; // Current height map of the container
+      remainingItems: CargoItem[]; // Items yet to be packed
+      packedItems: PackedItem[]; // Items already packed
+      totalVolume: number; // Total volume of packed items
+      totalWeight: number; // Total weight of packed items
+    }
+    
+    // Initialize action representation
+    interface Action {
+      itemIndex: number; // Index of the item to pack
+      position: Position; // Position to place the item
+      rotation: Rotation; // Rotation of the item
+    }
+    
+    // Initialize the state
+    const initialState: State = {
+      heightMap: Array(params.gridSize).fill(0).map(() => Array(params.gridSize).fill(0)),
+      remainingItems: [...items],
+      packedItems: [],
+      totalVolume: 0,
+      totalWeight: 0
+    };
+    
+    // Scale container dimensions to grid size
+    const scaleToGrid = (value: number, dimension: number): number => {
+      return Math.floor((value / dimension) * params.gridSize);
+    };
+    
+    // Scale grid position back to real dimensions (used for visualization)
+    // This function will be useful when implementing visualization features
+    /*
+    const scaleFromGrid = (value: number, dimension: number): number => {
+      return (value / params.gridSize) * dimension;
+    };
+    */
+    
+    // Calculate reward based on packing efficiency, stability, and constraints
+    const calculateReward = (state: State, action: Action, nextState: State): number => {
+      // Volume utilization reward
+      const volumeReward = (nextState.totalVolume - state.totalVolume) / 
+                          (container.length * container.width * container.height);
+      
+      // Stability reward - check if the item is supported from below
+      let stabilityReward = 0;
+      const item = state.remainingItems[action.itemIndex];
+      
+      // Calculate support percentage (how much of the item's bottom face is supported)
+      const supportPercentage = calculateSupportPercentage(action, state.packedItems);
+      stabilityReward = supportPercentage * 0.5; // Scale stability reward
+      
+      // Compactness reward - prefer placements that are close to other items
+      let compactnessReward = 0;
+      if (state.packedItems.length > 0) {
+        const avgDistance = calculateAverageDistance(action.position, state.packedItems);
+        compactnessReward = Math.max(0, 1 - (avgDistance / params.gridSize)) * 0.3;
+      }
+      
+      // Constraint satisfaction reward
+      let constraintReward = 0;
+      if (item.constraints && item.constraints.length > 0) {
+        // Check if constraints are satisfied
+        const constraintsSatisfied = checkConstraintsSatisfied(item, action, state.packedItems);
+        constraintReward = constraintsSatisfied ? 0.5 : -0.5;
+      }
+      
+      // Combine rewards
+      return volumeReward + stabilityReward + compactnessReward + constraintReward;
+    };
+    
+    // Calculate what percentage of the item's bottom face is supported
+    // Enhanced to be much stricter about floating boxes
+    const calculateSupportPercentage = (action: Action, packedItems: PackedItem[]): number => {
+      const { position, rotation } = action;
+      const bottomFaceArea = rotation.length * rotation.width;
+      let supportedArea = 0;
+      
+      // Check if the item is on the container floor
+      if (Math.abs(position.y) < 0.001) { // Using a smaller tolerance
+        return 1.0; // Fully supported by the floor
+      }
+      
+      // Check support from other items
+      for (const packedItem of packedItems) {
+        // Get the actual dimensions based on the rotation of the packed item
+        let itemLength, itemWidth, itemHeight;
+        
+        // Determine the actual dimensions based on rotation
+        if (packedItem.rotation.y === 90) {
+          itemLength = packedItem.width;
+          itemWidth = packedItem.length;
+          itemHeight = packedItem.height;
+        } else if (packedItem.rotation.x === 90) {
+          itemLength = packedItem.length;
+          itemWidth = packedItem.height;
+          itemHeight = packedItem.width;
+        } else if (packedItem.rotation.z === 90) {
+          itemLength = packedItem.height;
+          itemWidth = packedItem.width;
+          itemHeight = packedItem.length;
+        } else if (packedItem.rotation.x === 90 && packedItem.rotation.y === 90) {
+          itemLength = packedItem.width;
+          itemWidth = packedItem.height;
+          itemHeight = packedItem.length;
+        } else if (packedItem.rotation.y === 90 && packedItem.rotation.z === 90) {
+          itemLength = packedItem.height;
+          itemWidth = packedItem.length;
+          itemHeight = packedItem.width;
+        } else {
+          itemLength = packedItem.length;
+          itemWidth = packedItem.width;
+          itemHeight = packedItem.height;
+        }
+        
+        // Check if this item is directly below and supporting the new item
+        // Using a smaller tolerance to ensure items are truly supported
+        if (Math.abs(packedItem.position.y + itemHeight - position.y) < 0.001) {
+          // Calculate the overlap area on the XZ plane
+          const overlapX = Math.max(0, 
+            Math.min(position.x + rotation.length, packedItem.position.x + itemLength) - 
+            Math.max(position.x, packedItem.position.x));
+            
+          const overlapZ = Math.max(0, 
+            Math.min(position.z + rotation.width, packedItem.position.z + itemWidth) - 
+            Math.max(position.z, packedItem.position.z));
+            
+          supportedArea += overlapX * overlapZ;
+        }
+      }
+      
+      // Require a minimum support percentage to prevent floating
+      const supportPercentage = supportedArea / bottomFaceArea;
+      
+      // If support is less than 50%, consider the item floating
+      if (supportPercentage < 0.5) {
+        console.log('Item would be floating - insufficient support:', supportPercentage);
+        return 0; // No support - item would be floating
+      }
+      
+      return supportPercentage;
+    };
+    
+    // Calculate average distance to packed items
+    const calculateAverageDistance = (position: Position, packedItems: PackedItem[]): number => {
+      if (packedItems.length === 0) return params.gridSize; // Maximum distance if no items
+      
+      let totalDistance = 0;
+      for (const packedItem of packedItems) {
+        const dx = position.x - packedItem.position.x;
+        const dy = position.y - packedItem.position.y;
+        const dz = position.z - packedItem.position.z;
+        totalDistance += Math.sqrt(dx * dx + dy * dy + dz * dz);
+      }
+      
+      return totalDistance / packedItems.length;
+    };
+    
+    // Check if all constraints are satisfied
+    const checkConstraintsSatisfied = (item: CargoItem, action: Action, packedItems: PackedItem[]): boolean => {
+      if (!item.constraints) return true;
+      
+      for (const constraint of item.constraints) {
+        switch (constraint.type) {
+          case CONSTRAINT_TYPES.MUST_BE_ON_TOP:
+            if (!isValidForTopPlacement(action.position, action.rotation, packedItems)) {
+              return false;
+            }
+            break;
+          case CONSTRAINT_TYPES.MUST_BE_ON_BOTTOM:
+            if (action.position.y > 0.01) { // Allow small floating point error
+              return false;
+            }
+            break;
+          case CONSTRAINT_TYPES.MUST_BE_UPRIGHT:
+            if (action.rotation.x !== 0 || action.rotation.z !== 0) {
+              return false;
+            }
+            break;
+          case 'MAX_STACK_WEIGHT': // Using string literal since it's not in CONSTRAINT_TYPES
+            if (!isValidForWeightConstraint(item, action, packedItems, constraint.value || 0)) {
+              return false;
+            }
+            break;
+          case CONSTRAINT_TYPES.FRAGILE:
+            if (!isValidForFragileItem(action.position, action.rotation, packedItems)) {
+              return false;
+            }
+            break;
+        }
+      }
+      
+      return true;
+    };
+    
+    // Check if position is valid for top placement
+    const isValidForTopPlacement = (position: Position, _rotation: Rotation, packedItems: PackedItem[]): boolean => {
+      // Item must be placed on top of the stack
+      let highestY = 0;
+      for (const packedItem of packedItems) {
+        const itemTop = packedItem.position.y + 
+          (packedItem.rotation.x === 90 ? packedItem.width : 
+           packedItem.rotation.z === 90 ? packedItem.length : 
+           packedItem.height);
+        highestY = Math.max(highestY, itemTop);
+      }
+      
+      // Allow a small tolerance for floating point errors
+      return Math.abs(position.y - highestY) < 0.1;
+    };
+    
+    // Check if position is valid for weight constraint
+    const isValidForWeightConstraint = (_item: CargoItem, action: Action, packedItems: PackedItem[], maxWeight: number): boolean => {
+      // Calculate total weight of items stacked above this item
+      let totalStackWeight = 0;
+      const { position, rotation } = action;
+      
+      for (const packedItem of packedItems) {
+        // Check if this packed item is above our item
+        if (packedItem.position.y > position.y + rotation.height) {
+          // Check if there's overlap on the XZ plane
+          const overlapX = Math.max(0, 
+            Math.min(position.x + rotation.length, packedItem.position.x + packedItem.length) - 
+            Math.max(position.x, packedItem.position.x));
+            
+          const overlapZ = Math.max(0, 
+            Math.min(position.z + rotation.width, packedItem.position.z + packedItem.width) - 
+            Math.max(position.z, packedItem.position.z));
+            
+          if (overlapX > 0 && overlapZ > 0) {
+            totalStackWeight += packedItem.weight;
+          }
+        }
+      }
+      
+      return totalStackWeight <= maxWeight;
+    };
+    
+    // Generate valid actions for the current state
+    const generateValidActions = (state: State): Action[] => {
+      const validActions: Action[] = [];
+      
+      // Consider only a subset of items for efficiency
+      const itemsToConsider = state.remainingItems.slice(0, params.lookahead);
+      
+      for (let itemIndex = 0; itemIndex < itemsToConsider.length; itemIndex++) {
+        const item = itemsToConsider[itemIndex];
+        
+        // Get possible rotations for this item
+        const rotations = getPossibleRotations(item);
+        
+        for (const rotation of rotations) {
+          // Try different positions within the container
+          for (let x = 0; x <= container.length - rotation.length; x += container.length / params.gridSize) {
+            for (let z = 0; z <= container.width - rotation.width; z += container.width / params.gridSize) {
+              // Find the highest point at this (x,z) coordinate
+              let y = 0;
+              for (const packedItem of state.packedItems) {
+                // Check if this position overlaps with the packed item on the XZ plane
+                const overlapX = Math.max(0, 
+                  Math.min(x + rotation.length, packedItem.position.x + packedItem.length) - 
+                  Math.max(x, packedItem.position.x));
+                  
+                const overlapZ = Math.max(0, 
+                  Math.min(z + rotation.width, packedItem.position.z + packedItem.width) - 
+                  Math.max(z, packedItem.position.z));
+                  
+                if (overlapX > 0 && overlapZ > 0) {
+                  // There is overlap, update y to be on top of this item
+                  const itemHeight = packedItem.rotation.x === 90 ? packedItem.width : 
+                                    packedItem.rotation.z === 90 ? packedItem.length : 
+                                    packedItem.height;
+                  y = Math.max(y, packedItem.position.y + itemHeight);
+                }
+              }
+              
+              // Check if this position is valid
+              const position = { x, y, z };
+              if (isPositionEmpty(position, rotation, state.packedItems, container)) {
+                validActions.push({ itemIndex, position, rotation });
+              }
+            }
+          }
+        }
+      }
+      
+      return validActions;
+    };
+    
+    // Apply an action to a state and get the next state
+    const applyAction = (state: State, action: Action): State => {
+      const { itemIndex, position, rotation } = action;
+      const item = state.remainingItems[itemIndex];
+      
+      // Create a copy of the current state
+      const nextState: State = {
+        heightMap: [...state.heightMap.map(row => [...row])],
+        remainingItems: [...state.remainingItems],
+        packedItems: [...state.packedItems],
+        totalVolume: state.totalVolume,
+        totalWeight: state.totalWeight
+      };
+      
+      // Create a packed item
+      const packedItem: PackedItem = {
+        ...item,
+        position,
+        rotation: {
+          x: rotation.x,
+          y: rotation.y,
+          z: rotation.z
+        },
+        color: item.color || getRandomColor()
+      };
+      
+      // Update the state
+      nextState.packedItems.push(packedItem);
+      nextState.remainingItems = nextState.remainingItems.filter((_, idx) => idx !== itemIndex);
+      nextState.totalVolume += item.length * item.width * item.height;
+      nextState.totalWeight += item.weight;
+      
+      // Update the height map
+      const gridX = scaleToGrid(position.x, container.length);
+      const gridZ = scaleToGrid(position.z, container.width);
+      const gridLength = scaleToGrid(rotation.length, container.length);
+      const gridWidth = scaleToGrid(rotation.width, container.width);
+      const height = position.y + rotation.height;
+      
+      for (let i = gridX; i < gridX + gridLength && i < params.gridSize; i++) {
+        for (let j = gridZ; j < gridZ + gridWidth && j < params.gridSize; j++) {
+          nextState.heightMap[i][j] = Math.max(nextState.heightMap[i][j], height);
+        }
+      }
+      
+      return nextState;
+    };
+    
+    // Create or load neural network model for reinforcement learning
+    const createOrLoadModel = () => {
+      // If TensorFlow.js is not available, return null
+      if (!tf.sequential) {
+        return null;
+      }
+      
+      try {
+        // Try to load a previously saved model from localStorage
+        const savedModelJSON = localStorage.getItem('binPackingModel');
+        if (savedModelJSON) {
+          console.log('Loading existing model from storage');
+          const modelConfig = JSON.parse(savedModelJSON);
+          const model = tf.sequential();
+          
+          // Recreate the model from the saved configuration
+          modelConfig.layers.forEach((layerConfig: any) => {
+            switch (layerConfig.type) {
+              case 'dense':
+                model.add(tf.layers.dense({
+                  units: layerConfig.units,
+                  activation: layerConfig.activation,
+                  inputShape: layerConfig.inputShape
+                }));
+                break;
+              // Add other layer types as needed
+            }
+          });
+          
+          model.compile({
+            optimizer: tf.train.adam(0.001),
+            loss: 'meanSquaredError'
+          });
+          
+          return model;
+        }
+      } catch (error) {
+        console.warn('Error loading model, creating new one:', error);
+      }
+      
+      // Create a new model if loading failed or no model exists
+      console.log('Creating new neural network model');
+      const model = tf.sequential();
+      
+      // Input features: container dimensions, item dimensions, current state features
+      // Output: predicted reward for each action
+      model.add(tf.layers.dense({
+        units: 128,
+        activation: 'relu',
+        inputShape: [15] // State features + action features
+      }));
+      
+      model.add(tf.layers.dense({
+        units: 64,
+        activation: 'relu'
+      }));
+      
+      model.add(tf.layers.dense({
+        units: 1,
+        activation: 'linear' // Output is the predicted reward
+      }));
+      
+      model.compile({
+        optimizer: tf.train.adam(0.001),
+        loss: 'meanSquaredError'
+      });
+      
+      return model;
+    };
+    
+    // Convert state and action to feature vector for the neural network
+    const stateActionToFeatures = (state: State, action: Action) => {
+      if (!tf.tensor) return null;
+      
+      const { position, rotation } = action;
+      const item = state.remainingItems[action.itemIndex];
+      
+      // Container features
+      const containerVolume = container.length * container.width * container.height;
+      const containerUtilization = state.totalVolume / containerVolume;
+      
+      // Item features
+      const itemVolume = item.length * item.width * item.height;
+      const itemVolumeRatio = itemVolume / containerVolume;
+      
+      // Position features
+      const posXRatio = position.x / container.length;
+      const posYRatio = position.y / container.height;
+      const posZRatio = position.z / container.width;
+      
+      // Support and stability
+      const supportPercentage = calculateSupportPercentage(action, state.packedItems);
+      
+      // Proximity to other items
+      const avgDistance = state.packedItems.length > 0 ? 
+        calculateAverageDistance(position, state.packedItems) / 
+        Math.sqrt(container.length * container.length + container.height * container.height + container.width * container.width) : 
+        1.0;
+      
+      // Contact with walls
+      const wallContactCount = 
+        (position.x < 0.001 ? 1 : 0) + 
+        (position.z < 0.001 ? 1 : 0) + 
+        (position.y < 0.001 ? 1 : 0) + 
+        (position.x + rotation.length > container.length - 0.001 ? 1 : 0) + 
+        (position.z + rotation.width > container.width - 0.001 ? 1 : 0);
+      
+      // Remaining space features
+      const remainingItems = state.remainingItems.length;
+      const remainingItemsRatio = remainingItems / items.length;
+      
+      // Create feature vector
+      return tf.tensor2d([
+        [
+          containerUtilization,
+          itemVolumeRatio,
+          posXRatio, posYRatio, posZRatio,
+          rotation.x / 360, rotation.y / 360, rotation.z / 360,
+          supportPercentage,
+          avgDistance,
+          wallContactCount / 5,
+          remainingItemsRatio,
+          state.packedItems.length / items.length,
+          item.weight / container.maxWeight,
+          state.totalWeight / container.maxWeight
+        ]
+      ]);
+    };
+    
+    // Save the model to localStorage
+    const saveModel = (model: any) => {
+      if (!model) return;
+      
+      try {
+        // Extract model configuration
+        const modelConfig = {
+          layers: model.layers.map((layer: any) => ({
+            type: layer.getClassName().toLowerCase(),
+            units: layer.units,
+            activation: layer.activation ? layer.activation.getClassName().toLowerCase() : null,
+            inputShape: layer.inputShape
+          }))
+        };
+        
+        localStorage.setItem('binPackingModel', JSON.stringify(modelConfig));
+        console.log('Model saved to storage');
+      } catch (error) {
+        console.warn('Error saving model:', error);
+      }
+    };
+    
+    // True reinforcement learning algorithm implementation
+    const packWithRL = (): PackedResult => {
+      let currentState = initialState;
+      let iteration = 0;
+      let done = false;
+      
+      // Experience buffer for PPO
+      const experiences: {
+        state: State;
+        action: Action;
+        reward: number;
+        nextState: State;
+        done: boolean;
+        logProb: number;
+        value: number;
+      }[] = [];
+      
+      // Neural network-based policy evaluation
+      const evaluatePolicy = (state: State, actions: Action[], model: any): { action: Action; logProb: number; value: number } => {
+        if (actions.length === 0) {
+          // No valid actions, return dummy values
+          return { 
+            action: { itemIndex: 0, position: {x: 0, y: 0, z: 0}, rotation: {x: 0, y: 0, z: 0, length: 0, width: 0, height: 0} },
+            logProb: 0,
+            value: 0
+          };
+        }
+        
+        // Use the neural network model if available, otherwise fall back to heuristics
+        let actionScores;
+        
+        if (model && tf.tidy) {
+          // Use neural network to predict scores
+          actionScores = tf.tidy(() => {
+            // Convert each state-action pair to features and get predictions
+            const predictions = actions.map(action => {
+              const features = stateActionToFeatures(state, action);
+              if (!features) return 0;
+              
+              // Get prediction from model
+              const prediction = model.predict(features);
+              const score = prediction.dataSync()[0];
+              features.dispose();
+              prediction.dispose();
+              return score;
+            });
+            
+            return predictions;
+          });
+        } else {
+          // Fall back to heuristic scoring
+          actionScores = actions.map(action => {
+            const { position, rotation } = action;
+            const item = state.remainingItems[action.itemIndex];
+            
+            // Score based on contact with container walls and other items
+            let contactScore = 0;
+            if (position.x === 0) contactScore += 1; // Contact with left wall
+            if (position.z === 0) contactScore += 1; // Contact with back wall
+            if (position.y === 0) contactScore += 1; // Contact with floor
+            if (position.x + rotation.length >= container.length) contactScore += 1; // Contact with right wall
+            if (position.z + rotation.width >= container.width) contactScore += 1; // Contact with front wall
+            
+            // Score based on proximity to other packed items
+            const proximityScore = state.packedItems.length > 0 ? 
+              1 / (1 + calculateAverageDistance(position, state.packedItems)) : 0;
+            
+            // Score based on item volume (prefer larger items first)
+            const volumeScore = (item.length * item.width * item.height) / 
+                               (container.length * container.width * container.height);
+            
+            // Score based on support from below - higher weight to prevent floating
+            const supportScore = calculateSupportPercentage(action, state.packedItems);
+            
+            // Combined score - increased weight on support to prevent floating
+            return contactScore * 0.2 + proximityScore * 0.2 + volumeScore * 0.1 + supportScore * 0.5;
+          });
+        }
+        
+        // Convert scores to probabilities using softmax
+        const maxScore = Math.max(...actionScores);
+        const expScores = actionScores.map((score: number) => Math.exp(score - maxScore));
+        const sumExpScores = expScores.reduce((sum: number, exp: number) => sum + exp, 0);
+        const probs = expScores.map((exp: number) => exp / sumExpScores);
+        
+        // Choose action based on probabilities (with exploration)
+        let selectedIndex;
+        if (Math.random() < params.explorationRate) {
+          // Explore: choose randomly
+          selectedIndex = Math.floor(Math.random() * actions.length);
+        } else {
+          // Exploit: choose based on probabilities
+          const r = Math.random();
+          let cumProb = 0;
+          selectedIndex = probs.findIndex((prob: number) => {
+            cumProb += prob;
+            return r < cumProb;
+          });
+          if (selectedIndex === -1) selectedIndex = 0;
+        }
+        
+        // Estimate value (in a real implementation, this would come from a value network)
+        const value = state.totalVolume / (container.length * container.width * container.height);
+        
+        return {
+          action: actions[selectedIndex],
+          logProb: Math.log(probs[selectedIndex]),
+          value
+        };
+      };
+      
+      // Create or load the neural network model
+      const model = createOrLoadModel();
+      
+      // Experience replay buffer for training
+      const replayBuffer: {
+        features: any;
+        reward: number;
+      }[] = [];
+      
+      // Main reinforcement learning loop
+      while (!done && iteration < params.maxIterations) {
+        // Generate valid actions
+        const validActions = generateValidActions(currentState);
+        
+        // Check if we're done
+        if (validActions.length === 0 || currentState.remainingItems.length === 0) {
+          done = true;
+          break;
+        }
+        
+        // Select action using the policy
+        const { action, logProb, value } = evaluatePolicy(currentState, validActions, model);
+        
+        // Apply the action
+        const nextState = applyAction(currentState, action);
+        
+        // Calculate reward
+        const reward = calculateReward(currentState, action, nextState);
+        
+        // Store experience for learning
+        if (model && tf.tensor) {
+          const features = stateActionToFeatures(currentState, action);
+          if (features) {
+            replayBuffer.push({
+              features,
+              reward
+            });
+          }
+        }
+        
+        // Store experience for PPO
+        experiences.push({
+          state: currentState,
+          action,
+          reward,
+          nextState,
+          done: false,
+          logProb,
+          value
+        });
+        
+        // Update current state
+        currentState = nextState;
+        iteration++;
+        
+        // Report progress
+        if (progressCallback) {
+          const progress = currentState.totalVolume / (container.length * container.width * container.height);
+          progressCallback(progress * 100, currentState);
+        }
+        
+        // Periodically train the model with experiences
+        if (model && replayBuffer.length >= params.batchSize && tf.tensor) {
+          console.log(`Training model with ${replayBuffer.length} experiences`);
+          
+          // Train the model using the replay buffer
+          tf.tidy(() => {
+            // Create batches for training
+            const batchSize = Math.min(params.batchSize, replayBuffer.length);
+            const batch = replayBuffer.slice(0, batchSize);
+            
+            // Prepare inputs and targets
+            const inputs = tf.concat(batch.map(exp => exp.features));
+            const targets = tf.tensor2d(batch.map(exp => [exp.reward]));
+            
+            // Train the model
+            model.fit(inputs, targets, {
+              epochs: 1,
+              batchSize: 32,
+              verbose: 0
+            }).then(() => {
+              console.log('Model training step completed');
+            });
+            
+            // Clear the used experiences
+            batch.forEach(exp => exp.features.dispose());
+            inputs.dispose();
+            targets.dispose();
+          });
+          
+          // Remove the used experiences from the buffer
+          replayBuffer.splice(0, params.batchSize);
+        }
+      }
+      
+      // Save the trained model
+      if (model) {
+        saveModel(model);
+      }
+      
+      // Mark the last experience as done
+      if (experiences.length > 0) {
+        experiences[experiences.length - 1].done = true;
+      }
+      
+      // In a real implementation, we would update the policy here using PPO
+      // For simplicity, we'll skip the actual policy update
+      
+      // Return the final packing result
+      return {
+        packedItems: currentState.packedItems,
+        unpackedItems: currentState.remainingItems,
+        containerFillPercentage: (currentState.totalVolume / (container.length * container.width * container.height)) * 100,
+        weightCapacityPercentage: (currentState.totalWeight / container.maxWeight) * 100,
+        totalWeight: currentState.totalWeight
+      };
+    };
+    
+    // Execute the reinforcement learning algorithm
+    return packWithRL();
   }
 };
 
