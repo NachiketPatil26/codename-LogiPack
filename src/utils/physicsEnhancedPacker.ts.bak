@@ -16,45 +16,25 @@ import { CargoItem, Container, PackedItem, PackedResult, ConstraintType } from '
 export const physicsEnhancedPacker = (items: CargoItem[], container: Container, progressCallback?: (progress: number, state: any) => void): PackedResult => {
   console.log('Using Physics-Enhanced Guillotine Algorithm');
   
-  // Expand items based on quantity
-  const expandedItems: CargoItem[] = [];
-  items.forEach(item => {
-    for (let i = 0; i < item.quantity; i++) {
-      expandedItems.push({
-        ...item,
-        id: `${item.id}-${i}`,
-        quantity: 1 // Set quantity to 1 for each expanded item
-      });
-    }
-  });
-  
-  console.log(`Expanded ${items.length} items to ${expandedItems.length} items based on quantity`);
-  
   // Constants for physics and stability calculations
   const MAX_ACCEPTABLE_TORQUE_RATIO = 0.7; // Maximum acceptable torque as ratio of total weight
   const MAX_COG_DEVIATION_RATIO = 0.2; // Maximum deviation of COG from ideal center (as ratio of dimension)
   const MIN_SUPPORT_RATIO = 0.5; // Minimum support required beneath an item (50% of base area) - reduced from 70% to allow more placements
   
   // Sort items by multiple criteria for optimal packing
-  // Prioritize larger and heavier boxes at the bottom for better stability
-  const sortedItems = [...expandedItems].sort((a, b) => {
+  const sortedItems = [...items].sort((a, b) => {
     // Primary sort: Heaviest items first (for better stability)
     if (Math.abs(b.weight - a.weight) > 0.01) return b.weight - a.weight;
     
-    // Secondary sort: Larger volume first (ensures larger boxes are placed first)
-    const volumeA = a.length * a.width * a.height;
-    const volumeB = b.length * b.width * b.height;
-    if (Math.abs(volumeB - volumeA) > 0.01) return volumeB - volumeA;
-    
-    // Tertiary sort: Larger base area first (better stability)
+    // Secondary sort: Larger base area first (better stability)
     const baseAreaA = a.length * a.width;
     const baseAreaB = b.length * b.width;
     if (Math.abs(baseAreaB - baseAreaA) > 0.01) return baseAreaB - baseAreaA;
     
-    // Fourth sort: Lower height-to-base ratio first (more stable shapes at bottom)
-    const ratioA = a.height / Math.sqrt(baseAreaA);
-    const ratioB = b.height / Math.sqrt(baseAreaB);
-    return ratioA - ratioB; // Lower ratio (less tall/thin) first
+    // Tertiary sort: Larger volume first (better space utilization)
+    const volumeA = a.length * a.width * a.height;
+    const volumeB = b.length * b.width * b.height;
+    return volumeB - volumeA;
   });
   
   // Group similar items together for better distribution
@@ -190,82 +170,56 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
   };
   
   // Calculate stability score for an item placement (higher is better)
-  const calculateStabilityScore = (item: CargoItem, position: { x: number; y: number; z: number }, currentPackedItems: PackedItem[]): number => {
+  const calculateStabilityScore = (
+    item: CargoItem, 
+    position: { x: number; y: number; z: number }, 
+    currentPackedItems: PackedItem[]
+  ): number => {
     // Create a temporary item to test placement
     const tempItem: PackedItem = {
       ...item,
       position,
-      rotation: { x: 0, y: 0, z: 0 }
-    };
     
-    // Create a temporary array with all currently packed items plus this new one
-    const tempPackedItems = [...currentPackedItems, tempItem];
-    
-    // Calculate center of gravity with this item added
-    const cog = calculateCenterOfGravity(tempPackedItems);
-    
-    // Calculate support score (how well the item is supported from below)
-    let supportScore = 0;
-    
-    // If item is on the ground, it's fully supported
+    // If the item is on the ground, it's perfectly stable
     if (position.y === 0) {
-      supportScore = 1;
-    } else {
-      // Calculate how much of this item's base is supported by items below
-      let supportedArea = 0;
-      const itemBaseArea = item.length * item.width;
-      let supportedBySmaller = false;
+      // Give bonus for larger items on the ground
       const itemVolume = item.length * item.width * item.height;
-      
-      for (const packedItem of currentPackedItems) {
-        // Only consider items directly below this one
-        if (Math.abs(packedItem.position.y + packedItem.height - position.y) < 0.001) {
-          // Calculate overlap area (intersection of rectangles)
-          const overlapX = Math.max(
-            0,
-            Math.min(position.x + item.length, packedItem.position.x + packedItem.length) -
-            Math.max(position.x, packedItem.position.x)
-          );
-          
-          const overlapZ = Math.max(
-            0,
-            Math.min(position.z + item.width, packedItem.position.z + packedItem.width) -
-            Math.max(position.z, packedItem.position.z)
-          );
-          
-          const thisOverlapArea = overlapX * overlapZ;
-          supportedArea += thisOverlapArea;
-          
-          // Check if this item is larger than the one beneath it
-          // We want to prevent large boxes on small boxes
-          const supportVolume = packedItem.length * packedItem.width * packedItem.height;
-          
-          // If this item is significantly larger than its support (>20% larger)
-          // and there's meaningful overlap, mark it as supported by a smaller item
-          if (thisOverlapArea > 0.1 * itemBaseArea && itemVolume > supportVolume * 1.2) {
-            supportedBySmaller = true;
-          }
-        }
-      }
-      
-      // Base support score calculation
-      supportScore = Math.min(1, supportedArea / (itemBaseArea * MIN_SUPPORT_RATIO));
-      
-      // Penalize stacking large boxes on smaller ones
-      if (supportedBySmaller) {
-        supportScore *= 0.5; // 50% penalty for stacking large on small
-      }
+      const baseBonus = Math.min(0.2, itemVolume / 100000); // Bonus based on size
+      return 1.0 + baseBonus; // Can exceed 1.0 as a special case for ground items
     }
     
-    // Calculate COG deviation from ideal (lower is better)
-    const cogDeviationX = Math.abs(cog.x - idealCenterOfGravity.x) / containerLength;
-    const cogDeviationZ = Math.abs(cog.z - idealCenterOfGravity.z) / containerWidth;
-    const cogDeviation = (cogDeviationX + cogDeviationZ) / 2;
-    const cogDeviationScore = 1 - Math.min(1, cogDeviation / MAX_COG_DEVIATION_RATIO);
+    // Check support from already packed items below this position
+    const itemBaseArea = item.length * item.width;
+    let supportedArea = 0;
+    let supportedBySmaller = false;
     
-    // Calculate torque score (lower torque is better)
-    const totalWeight = tempPackedItems.reduce((sum, item) => sum + item.weight, 0);
-    const torque = calculateTorque(tempPackedItems, cog);
+    // Calculate overlap with packed items that are directly below this position
+    for (const packedItem of currentPackedItems) {
+      // Check if packed item is directly below the current position
+      if (Math.abs(packedItem.position.y + packedItem.height - position.y) < 0.001) {
+        // Calculate overlap area in XZ plane
+        const overlapX = Math.max(0, 
+          Math.min(position.x + item.length, packedItem.position.x + packedItem.length) - 
+          Math.max(position.x, packedItem.position.x));
+          
+        const overlapZ = Math.max(0, 
+          Math.min(position.z + item.width, packedItem.position.z + packedItem.width) - 
+          Math.max(position.z, packedItem.position.z));
+        
+        // Add overlap area to total supported area
+        const thisOverlapArea = overlapX * overlapZ;
+        supportedArea += thisOverlapArea;
+        
+        // Check if this item is larger than the one beneath it
+        // We want to prevent large boxes on small boxes
+        const thisVolume = item.length * item.width * item.height;
+        const supportVolume = packedItem.length * packedItem.width * packedItem.height;
+        
+        // If this item is significantly larger than its support (>20% larger)
+        if (thisVolume > supportVolume * 1.2 && thisOverlapArea > 0) {
+          supportedBySmaller = true;
+        }
+      }
     const maxAcceptableTorque = totalWeight * MAX_ACCEPTABLE_TORQUE_RATIO;
     const torqueScore = 1 - Math.min(1, torque / maxAcceptableTorque);
     
@@ -299,114 +253,23 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
       balanceScore = Math.min(1, balanceScore);
     }
     
-    // Calculate size-based stacking score (penalize large items on top of small items)
-    let stackingScore = 1.0;
-    if (position.y > 0) {
-      // Check if this item is stacked on smaller items
-      const itemVolume = item.length * item.width * item.height;
-      let smallerSupportCount = 0;
-      let totalSupportCount = 0;
-      
-      for (const packedItem of currentPackedItems) {
-        // Only consider items directly below this one
-        if (Math.abs(packedItem.position.y + packedItem.height - position.y) < 0.001) {
-          const supportVolume = packedItem.length * packedItem.width * packedItem.height;
-          totalSupportCount++;
-          
-          // Count supports that are significantly smaller (>20% smaller)
-          if (itemVolume > supportVolume * 1.2) {
-            smallerSupportCount++;
-          }
-        }
-      }
-      
-      // If there are supports and most of them are smaller, penalize
-      if (totalSupportCount > 0) {
-        const smallerRatio = smallerSupportCount / totalSupportCount;
-        // Apply penalty proportional to how many smaller supports there are
-        // Reduced penalty from 0.7 to 0.5 to allow more stacking for better space utilization
-        stackingScore = 1.0 - (smallerRatio * 0.5);
-      }
-    }
-    
-    // Calculate space utilization score (how well this position fills available space)
-    let spaceUtilizationScore = 0.0;
-    
-    // Check how well this item fits in its space
-    if (currentPackedItems.length > 0) {
-      // Find nearby items to check for tight packing
-      let contactCount = 0;
-      let potentialContactCount = 6; // Maximum 6 sides could have contact
-      
-      // Check if item is against container walls (these count as good contacts)
-      if (position.x === 0) contactCount++;
-      if (position.y === 0) contactCount++;
-      if (position.z === 0) contactCount++;
-      if (position.x + item.length === containerLength) contactCount++;
-      if (position.z + item.width === containerWidth) contactCount++;
-      
-      // Check for contact with other items (tight packing)
-      for (const packedItem of currentPackedItems) {
-        // Check for contact on X axis (front/back)
-        if (Math.abs(position.x - (packedItem.position.x + packedItem.length)) < 0.001 ||
-            Math.abs(packedItem.position.x - (position.x + item.length)) < 0.001) {
-          // Check if they overlap in Y and Z
-          if (overlapsInDimension(position.y, item.height, packedItem.position.y, packedItem.height) &&
-              overlapsInDimension(position.z, item.width, packedItem.position.z, packedItem.width)) {
-            contactCount++;
-          }
-        }
-        
-        // Check for contact on Z axis (left/right)
-        if (Math.abs(position.z - (packedItem.position.z + packedItem.width)) < 0.001 ||
-            Math.abs(packedItem.position.z - (position.z + item.width)) < 0.001) {
-          // Check if they overlap in X and Y
-          if (overlapsInDimension(position.x, item.length, packedItem.position.x, packedItem.length) &&
-              overlapsInDimension(position.y, item.height, packedItem.position.y, packedItem.height)) {
-            contactCount++;
-          }
-        }
-        
-        // Contact on Y axis is already handled by support calculation
-      }
-      
-      // Calculate space utilization score based on contact count
-      spaceUtilizationScore = contactCount / potentialContactCount;
-    } else {
-      // For the first item, prefer corner placement for better space utilization
-      if (position.x === 0 && position.y === 0 && position.z === 0) {
-        spaceUtilizationScore = 1.0; // Perfect corner placement
-      } else if (position.x === 0 || position.y === 0 || position.z === 0) {
-        spaceUtilizationScore = 0.5; // At least against one wall
-      }
-    }
-    
-    // Helper function to check if two ranges overlap
-    function overlapsInDimension(start1: number, size1: number, start2: number, size2: number): boolean {
-      return (start1 < start2 + size2) && (start2 < start1 + size1);
-    }
-    
-    // Calculate final stability score with enhanced weights for COG and torque
-    // For the first few items, heavily prioritize space utilization while maintaining stability
+    // Calculate final stability score (weighted combination)
+    // For the first few items, heavily prioritize balance and COG
     if (currentPackedItems.length < 5) {
       return (
-        supportScore * 0.1 +
-        cogDeviationScore * 0.15 +  // Reduced weight for COG to prioritize space utilization
-        torqueScore * 0.1 +         // Reduced weight for torque to prioritize space utilization
-        heightScore * 0.05 +        // Kept the same
-        balanceScore * 0.05 +       // Kept the same
-        stackingScore * 0.05 +      // Kept the same
-        spaceUtilizationScore * 0.5  // Significantly increased weight for space utilization
+        supportScore * 0.2 +
+        cogDeviationScore * 0.4 +  // Increased weight for COG
+        torqueScore * 0.25 +       // Increased weight for torque
+        heightScore * 0.05 +       // Reduced weight for height
+        balanceScore * 0.1
       );
     } else {
       return (
-        supportScore * 0.1 +
-        cogDeviationScore * 0.1 +
-        torqueScore * 0.05 +
-        heightScore * 0.05 +
-        balanceScore * 0.05 +
-        stackingScore * 0.05 +
-        spaceUtilizationScore * 0.6  // Even higher weight for space utilization in later items
+        supportScore * 0.3 +
+        cogDeviationScore * 0.3 +
+        torqueScore * 0.2 +
+        heightScore * 0.1 +
+        balanceScore * 0.1
       );
     }
   };
@@ -713,17 +576,14 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
     // Items on the ground are always supported
     if (y === 0) return true;
     
-    // Calculate the base area of the item
-    const itemBaseArea = item.length * item.width;
+    // For items not on the ground, check support from items below
     let supportedArea = 0;
-    let supportedBySmaller = false;
-    const itemVolume = item.length * item.width * item.height;
+    const itemBaseArea = item.length * item.width;
     
-    // Check for support from packed items below
     for (const packedItem of packedItems) {
       // Only consider items directly below this one
       if (Math.abs(packedItem.position.y + packedItem.height - y) < 0.001) {
-        // Calculate overlap area (intersection of rectangles in XZ plane)
+        // Calculate overlap area (intersection of rectangles)
         const overlapX = Math.max(
           0,
           Math.min(x + item.length, packedItem.position.x + packedItem.length) -
@@ -736,39 +596,12 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
           Math.max(z, packedItem.position.z)
         );
         
-        const thisOverlapArea = overlapX * overlapZ;
-        supportedArea += thisOverlapArea;
-        
-        // Check if this item is larger than the one beneath it
-        // We want to prevent large boxes on small boxes
-        const supportVolume = packedItem.length * packedItem.width * packedItem.height;
-        
-        // If this item is significantly larger than its support (>40% larger)
-        // and there's meaningful overlap, mark it as supported by a smaller item
-        // Increased from 20% to 40% to allow more flexible stacking arrangements
-        if (thisOverlapArea > 0.1 * itemBaseArea && itemVolume > supportVolume * 1.4) {
-          supportedBySmaller = true;
-        }
+        supportedArea += overlapX * overlapZ;
       }
     }
     
-    // Calculate support ratio (supported area / base area)
-    const supportRatio = supportedArea / itemBaseArea;
-    
-    // First few items may need more lenient stability checking
-    if (packedItems.length < 3 && supportRatio > 0) {
-      return true; // More lenient for first few items
-    }
-    
-    // Prevent stacking large boxes on small boxes
-    if (supportedBySmaller) {
-      // If the item is significantly larger than what's supporting it,
-      // require more support to ensure stability
-      return supportRatio >= MIN_SUPPORT_RATIO * 1.5;
-    }
-    
-    // Check if support ratio exceeds minimum threshold
-    return supportRatio >= MIN_SUPPORT_RATIO;
+    // Check if supported area meets minimum support requirement
+    return supportedArea >= (itemBaseArea * MIN_SUPPORT_RATIO);
   };
   
   // Check if an item placement respects weight constraints
@@ -1099,35 +932,11 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
   console.log(`- Center of gravity: x=${finalCog.x.toFixed(2)}, y=${finalCog.y.toFixed(2)}, z=${finalCog.z.toFixed(2)}`);
   console.log(`- Stability torque ratio: ${(finalTorque / totalWeight).toFixed(4)}`);
   
-  // Ensure totalWeight is a number
-  const finalTotalWeight = Number(totalWeight);
-  
-  // Consolidate unpacked items by grouping them back by their original ID
-  const consolidatedUnpacked: { [key: string]: CargoItem & { quantity: number } } = {};
-  
-  unpackedItems.forEach((item: CargoItem) => {
-    // Extract the original item ID (before the dash)
-    const originalId = item.id.split('-')[0];
-    
-    if (consolidatedUnpacked[originalId]) {
-      consolidatedUnpacked[originalId].quantity += 1;
-    } else {
-      consolidatedUnpacked[originalId] = {
-        ...item,
-        id: originalId,
-        quantity: 1
-      };
-    }
-  });
-  
-  // Update the result with consolidated unpacked items
-  const finalUnpackedItems = Object.values(consolidatedUnpacked);
-  
   return {
     packedItems,
-    unpackedItems: finalUnpackedItems,
+    unpackedItems,
     containerFillPercentage,
     weightCapacityPercentage,
-    totalWeight: finalTotalWeight
+    totalWeight
   };
 };
