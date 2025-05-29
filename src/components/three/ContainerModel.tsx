@@ -120,68 +120,8 @@ const ContainerModel: React.FC<ContainerModelProps> = ({ container }) => {
         />
       </mesh>
       
-      {/* Container walls - enhanced semi-transparent with glow effect */}
-      <group>
-        {/* Left wall */}
-        <mesh 
-          position={[length/2, height/2, 0]} 
-          rotation={[0, 0, 0]}
-          onPointerOver={() => setHovered(true)}
-          onPointerOut={() => setHovered(false)}
-        >
-          <boxGeometry args={[length, height, 0.5]} />
-          <meshStandardMaterial 
-            color={wallColor} 
-            transparent 
-            opacity={0.2} 
-            side={DoubleSide}
-            roughness={0.4}
-            metalness={0.2}
-            emissive={new Color(accentColor).multiplyScalar(0.2)}
-            emissiveIntensity={hovered ? 0.3 : 0.1}
-          />
-        </mesh>
-        
-        {/* Right wall */}
-        <mesh 
-          position={[length/2, height/2, width]} 
-          rotation={[0, 0, 0]}
-          onPointerOver={() => setHovered(true)}
-          onPointerOut={() => setHovered(false)}
-        >
-          <boxGeometry args={[length, height, 0.5]} />
-          <meshStandardMaterial 
-            color={wallColor} 
-            transparent 
-            opacity={0.2} 
-            side={DoubleSide}
-            roughness={0.4}
-            metalness={0.2}
-            emissive={new Color(accentColor).multiplyScalar(0.2)}
-            emissiveIntensity={hovered ? 0.3 : 0.1}
-          />
-        </mesh>
-        
-        {/* Back wall */}
-        <mesh 
-          position={[0, height/2, width/2]} 
-          rotation={[0, 0, 0]}
-          onPointerOver={() => setHovered(true)}
-          onPointerOut={() => setHovered(false)}
-        >
-          <boxGeometry args={[0.5, height, width]} />
-          <meshStandardMaterial 
-            color={wallColor} 
-            transparent 
-            opacity={0.2} 
-            side={DoubleSide}
-            roughness={0.4}
-            metalness={0.2}
-            emissive={new Color(accentColor).multiplyScalar(0.2)}
-            emissiveIntensity={hovered ? 0.3 : 0.1}
-          />
-        </mesh>
-      </group>
+      {/* Container walls - completely invisible, only showing edges */}
+      {/* No wall meshes - removed to make the container transparent */}
       
       {/* Container frame corners with glowing effect */}
       <group ref={accentRef}>

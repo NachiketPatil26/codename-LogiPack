@@ -25,16 +25,16 @@ const ALGORITHMS: Algorithm[] = [
     name: 'Physics-Enhanced Guillotine (Professional)',
     description: 'Professional-grade algorithm with center of gravity, torque, and weight distribution optimization. Ideal for logistics companies.'
   },
-  {
-    id: 'extreme_point',
-    name: 'Guillotine Cut Algorithm',
-    description: 'Recursively cuts space into two parts using guillotine cuts.'
-  },
-  {
-    id: 'layer_based',
-    name: 'Shelving with Search Algorithm',
-    description: 'Places items on shelves with optimized search patterns.'
-  },
+  // {
+  //   id: 'extreme_point',
+  //   name: 'Guillotine Cut Algorithm',
+  //   description: 'Recursively cuts space into two parts using guillotine cuts.'
+  // },
+  // {
+  //   id: 'layer_based',
+  //   name: 'Shelving with Search Algorithm',
+  //   description: 'Places items on shelves with optimized search patterns.'
+  // },
   {
     id: 'genetic',
     name: 'Genetic Algorithm',
@@ -42,7 +42,7 @@ const ALGORITHMS: Algorithm[] = [
   },
   {
     id: 'reinforcement_learning',
-    name: 'Reinforcement Deep Learning',
+    name: 'Deep Reinforcement Learning',
     description: 'Uses neural networks and reinforcement learning for optimal packing.'
   }
 ];

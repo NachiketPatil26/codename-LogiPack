@@ -5,12 +5,12 @@ import ContainerSelection from './components/ContainerSelection';
 import Visualization from './components/Visualization';
 import ExportPanel from './components/ExportPanel';
 import DeveloperUI from './components/DeveloperUI';
-import { Container, CargoItem, PackedResult } from './types';
+import { Container, CargoItem, PackedResult, DisplayCargoItem, ItemConstraint } from './types';
 import { containers } from './data/containers';
 import { LayoutGrid, Loader2 } from 'lucide-react';
 
 function App() {
-  const [cargoItems, setCargoItems] = useState<CargoItem[]>([]);
+  const [cargoItems, setCargoItems] = useState<DisplayCargoItem[]>([]);
   const [selectedContainer, setSelectedContainer] = useState<Container>(containers[0]);
   const [packedResult, setPackedResult] = useState<PackedResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -60,28 +60,51 @@ function App() {
     };
   }, []);
 
-  const handleAddCargoItem = (item: CargoItem) => {
-    // Preserve the ID if it already exists (for CSV imports), otherwise generate a new one
-    const newItem = {
-      ...item,
-      id: item.id || `item-${Date.now()}`
-    };
-    
-    // Log the item being added (for debugging)
-    console.log('Adding cargo item:', newItem);
-    
-    // Check if this item already exists (by ID)
-    const exists = cargoItems.some(existingItem => existingItem.id === newItem.id);
-    if (exists) {
-      console.log('Item already exists, not adding duplicate:', newItem.id);
-      return;
-    }
-    
-    setCargoItems(prevItems => [...prevItems, newItem]);
+  const handleAddCargoItem = (formData: Omit<CargoItem, 'id' | 'quantity'> & { quantity: number; isFragile?: boolean; isRotatable?: boolean; constraints?: ItemConstraint[] }) => {
+    const { name, length, width, height, weight, color, constraints, isFragile, isRotatable, quantity: formQuantity } = formData;
+
+    // Generate a groupKey based on item properties
+    // For constraints, sort them to ensure consistent key regardless of order
+    const sortedConstraintsString = constraints ? JSON.stringify([...constraints].sort((a, b) => a.type.localeCompare(b.type))) : '';
+    const groupKey = `${name}-${length}x${width}x${height}-${weight}-${color}-${isFragile}-${isRotatable}-${sortedConstraintsString}`;
+
+    setCargoItems(prevItems => {
+      const existingGroupIndex = prevItems.findIndex(item => item.groupKey === groupKey);
+
+      if (existingGroupIndex !== -1) {
+        // Item group exists, update its quantity
+        const updatedItems = [...prevItems];
+        updatedItems[existingGroupIndex] = {
+          ...updatedItems[existingGroupIndex],
+          displayQuantity: updatedItems[existingGroupIndex].displayQuantity + formQuantity
+        };
+        console.log('Updated quantity for group:', groupKey, 'New total:', updatedItems[existingGroupIndex].displayQuantity);
+        return updatedItems;
+      } else {
+        // New item group, add it
+        const newDisplayItem: DisplayCargoItem = {
+          groupKey,
+          id: `group-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, // Unique ID for the group
+          name,
+          length,
+          width,
+          height,
+          weight,
+          color,
+          constraints, // Store original constraints from form
+          isFragile: formData.isFragile, // Store direct boolean if available
+          isRotatable: formData.isRotatable, // Store direct boolean if available
+          displayQuantity: formQuantity
+        };
+        console.log('Adding new group:', newDisplayItem);
+        return [...prevItems, newDisplayItem];
+      }
+    });
   };
 
-  const handleRemoveCargoItem = (id: string) => {
-    setCargoItems(cargoItems.filter(item => item.id !== id));
+  const handleRemoveCargoItem = (groupId: string) => {
+    setCargoItems(prevItems => prevItems.filter(item => item.id !== groupId));
+    console.log('Removed group:', groupId);
   };
 
   const handleContainerSelect = (container: Container) => {
@@ -95,8 +118,20 @@ function App() {
     setPackedResult(null);
     
     console.log('Sending optimization request to worker with algorithm:', selectedAlgorithm);
+    const itemsToPack: CargoItem[] = cargoItems.flatMap(group =>
+      Array.from({ length: group.displayQuantity }, (_, i) => ({
+        ...group, // Spread properties from DisplayCargoItem
+        id: `${group.id}-item-${i}`, // Create a unique ID for each individual item
+        quantity: 1, // Each actual item sent to packer has quantity 1
+        // Ensure all properties of CargoItem are present, map from DisplayCargoItem if names differ
+        // For example, if DisplayCargoItem didn't have 'constraints' directly but derived them,
+        // you'd map them here. In our current DisplayCargoItem, properties mostly align.
+      }))
+    );
+
+    console.log('Sending optimization request to worker with algorithm:', selectedAlgorithm, 'and items:', itemsToPack);
     worker.postMessage({
-      items: cargoItems,
+      items: itemsToPack,
       container: selectedContainer,
       algorithm: selectedAlgorithm
     });
@@ -183,7 +218,13 @@ function App() {
             <ExportPanel 
               container={selectedContainer} 
               packedResult={packedResult} 
-              cargoItems={cargoItems}
+              cargoItems={cargoItems.flatMap(group =>
+                Array.from({ length: group.displayQuantity }, (_, i) => ({
+                  ...group,
+                  id: `${group.id}-item-${i}`,
+                  quantity: 1,
+                }))
+              )}
               canvas={canvas}
             />
           )}

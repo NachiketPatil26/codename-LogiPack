@@ -57,3 +57,19 @@ export interface PackedResult {
   progress?: number;
   type?: string;
 }
+
+export interface DisplayCargoItem {
+  groupKey: string; // A unique key for this group of identical items (e.g., generated from properties)
+  id: string; // Use the ID of the first item in the group, or generate a group-specific ID
+  name: string;
+  length: number;
+  width: number;
+  height: number;
+  weight: number;
+  color: string;
+  constraints?: ItemConstraint[]; // Constraints from the form input
+  // These specific boolean flags might be derived from constraints or directly from form
+  isFragile?: boolean; 
+  isRotatable?: boolean; 
+  displayQuantity: number; // The quantity for this group to display in the UI
+}

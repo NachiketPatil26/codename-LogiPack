@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useForm, SubmitHandler, Controller } from 'react-hook-form';
-import { CargoItem, ConstraintType, ItemConstraint } from '../types';
+import { CargoItem, ConstraintType, ItemConstraint, DisplayCargoItem } from '../types';
 import { PackagePlus, Trash2, Package, Plus, Palette, Hash, X, ChevronDown, Upload, AlertTriangle, CheckCircle, AlertCircle } from 'lucide-react';
 
 interface CargoInputProps {
-  cargoItems: CargoItem[];
-  onAddItem: (item: CargoItem) => void;
+  cargoItems: DisplayCargoItem[]; // Changed to DisplayCargoItem
+  // The formData type should match what App.tsx's handleAddCargoItem expects
+  onAddItem: (formData: Omit<CargoItem, 'id' | 'quantity'> & { quantity: number; isFragile?: boolean; isRotatable?: boolean; constraints?: ItemConstraint[] }) => void;
   onRemoveItem: (id: string) => void;
 }
 
@@ -70,68 +71,34 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
   }, [selectedColor, setValue]);
   
   const onSubmit: SubmitHandler<CargoFormInputs> = (data) => {
-    // Handle quantity - create multiple items with the same properties
-    const quantity = data.quantity || 1;
-    
-    // Create constraints array based on checkboxes
     const constraints: ItemConstraint[] = [];
-    
-    // Add fragile constraint if checked
     if (data.isFragile) {
-      constraints.push({
-        type: ConstraintType.FRAGILE
-      });
-      console.log('Adding fragile constraint');
+      constraints.push({ type: ConstraintType.FRAGILE });
     }
-    
-    // Add must-be-upright constraint if not rotatable
-    if (data.isRotatable === false) {
-      constraints.push({
-        type: ConstraintType.MUST_BE_UPRIGHT
-      });
-      console.log('Adding non-rotatable constraint');
+    if (data.isRotatable === false) { // Check for explicit false, as true is default
+      constraints.push({ type: ConstraintType.MUST_BE_UPRIGHT });
     }
-    
-    // Create a new cargo item with the current data
-    const baseItem = {
+
+    const formDataForParent = {
       name: data.name,
       length: data.length,
       width: data.width,
       height: data.height,
       weight: data.weight,
-      color: currentColor, // Ensure we use the current color
-      quantity: data.quantity,
-      constraints: constraints.length > 0 ? constraints : undefined
+      color: currentColor, // Use watched color
+      quantity: data.quantity || 1, // Ensure quantity is at least 1
+      isFragile: data.isFragile,
+      isRotatable: data.isRotatable,
+      constraints: constraints.length > 0 ? constraints : undefined,
     };
-    
-    console.log('Creating item with constraints:', constraints);
-    
-    // Add the item(s) based on quantity
-    const timestamp = Date.now();
-    
-    if (quantity === 1) {
-      const newItem = {
-        ...baseItem,
-        id: `item-${timestamp}`
-      };
-      console.log('Adding single item:', newItem);
-      onAddItem(newItem);
-    } else {
-      // Create multiple items with incrementing names
-      console.log(`Creating ${quantity} items`);
-      for (let i = 0; i < quantity; i++) {
-        const newItem = {
-          ...baseItem,
-          id: `item-${timestamp}-${i}`,
-          name: `${data.name} #${i + 1}`
-        };
-        console.log(`Adding item ${i+1}:`, newItem);
-        onAddItem(newItem);
-      }
-    }
+
+    console.log('Submitting form data to parent:', formDataForParent);
+    onAddItem(formDataForParent);
     
     // Reset form and UI state
-    reset();
+    reset(); // Resets to defaultValues
+    setValue('color', PREDEFINED_COLORS[8]); // Reset color explicitly if needed after reset
+    setSelectedColor(PREDEFINED_COLORS[8]); // Reset internal color state
     setIsAdding(false);
     setShowColorPicker(false);
   };
@@ -711,6 +678,9 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
                     Color
                   </th>
                   <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Quantity
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
                     Actions
                   </th>
                 </tr>
@@ -749,6 +719,9 @@ const CargoInput: React.FC<CargoInputProps> = ({ cargoItems, onAddItem, onRemove
                         />
                         <span>{item.color}</span>
                       </div>
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
+                      {item.displayQuantity}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-sm text-muted-foreground">
                       <div className="flex items-center gap-2">

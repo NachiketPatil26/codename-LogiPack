@@ -14,6 +14,11 @@ import { CargoItem, Container, PackedItem, PackedResult, ConstraintType } from '
  * - Stackability constraints
  */
 export const physicsEnhancedPacker = (items: CargoItem[], container: Container, progressCallback?: (progress: number, state: any) => void): PackedResult => {
+  console.log('[physicsEnhancedPacker] Initializing...');
+  console.log(`[physicsEnhancedPacker] Input items array length (unique item types): ${items.length}`);
+  let sumOfInputQuantities = 0;
+  items.forEach(item => sumOfInputQuantities += item.quantity);
+  console.log(`[physicsEnhancedPacker] Sum of quantities from input items (expected total individual items): ${sumOfInputQuantities}`);
   console.log('Using Physics-Enhanced Guillotine Algorithm');
   
   // Expand items based on quantity
@@ -28,7 +33,7 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
     }
   });
   
-  console.log(`Expanded ${items.length} items to ${expandedItems.length} items based on quantity`);
+  console.log(`[physicsEnhancedPacker] Expanded ${items.length} item types to ${expandedItems.length} individual items based on quantity.`);
   
   // Constants for physics and stability calculations
   const MAX_ACCEPTABLE_TORQUE_RATIO = 0.7; // Maximum acceptable torque as ratio of total weight
@@ -56,6 +61,7 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
     const ratioB = b.height / Math.sqrt(baseAreaB);
     return ratioA - ratioB; // Lower ratio (less tall/thin) first
   });
+  console.log(`[physicsEnhancedPacker] After sorting, we have ${sortedItems.length} individual items.`);
   
   // Group similar items together for better distribution
   const groupedItems: CargoItem[][] = [];
@@ -91,6 +97,7 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
   for (const group of groupedItems) {
     reorderedItems.push(...group);
   }
+  console.log(`[physicsEnhancedPacker] After grouping and reordering, we have ${reorderedItems.length} individual items to attempt packing.`);
   
   // Initialize container dimensions and tracking variables
   const containerLength = container.length;
@@ -692,16 +699,19 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
   };
   
   // Check if an item would overlap with packed items
-  const itemOverlapsWithPacked = (item: CargoItem, x: number, y: number, z: number): boolean => {
+  const itemOverlapsWithPacked = (itemToPlace: CargoItem, x: number, y: number, z: number): boolean => {
+    const epsilon = 0.01; // Larger epsilon for more reliable overlap detection
     for (const packedItem of packedItems) {
       const px = packedItem.position.x;
       const py = packedItem.position.y;
       const pz = packedItem.position.z;
-      
-      // Check for overlap using AABB collision detection
-      if (x < px + packedItem.length && x + item.length > px &&
-          y < py + packedItem.height && y + item.height > py &&
-          z < pz + packedItem.width && z + item.width > pz) {
+
+      const overlapX = Math.max(0, Math.min(x + itemToPlace.length, px + packedItem.length) - Math.max(x, px));
+      const overlapY = Math.max(0, Math.min(y + itemToPlace.height, py + packedItem.height) - Math.max(y, py));
+      const overlapZ = Math.max(0, Math.min(z + itemToPlace.width, pz + packedItem.width) - Math.max(z, pz));
+
+      // If there's a significant overlap in all three dimensions, items are overlapping
+      if (overlapX > epsilon && overlapY > epsilon && overlapZ > epsilon) {
         return true; // Overlap detected
       }
     }
@@ -1093,7 +1103,7 @@ export const physicsEnhancedPacker = (items: CargoItem[], container: Container, 
   
   // Log key metrics
   console.log('Physics-Enhanced Packing Metrics:');
-  console.log(`- Total items packed: ${packedItems.length} of ${items.length}`);
+  console.log(`[physicsEnhancedPacker] - Total items packed: ${packedItems.length} of ${reorderedItems.length} (total individual items attempted)`);
   console.log(`- Volume utilization: ${containerFillPercentage.toFixed(2)}%`);
   console.log(`- Weight utilization: ${weightCapacityPercentage.toFixed(2)}%`);
   console.log(`- Center of gravity: x=${finalCog.x.toFixed(2)}, y=${finalCog.y.toFixed(2)}, z=${finalCog.z.toFixed(2)}`);

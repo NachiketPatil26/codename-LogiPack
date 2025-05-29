@@ -175,40 +175,44 @@ const isPositionEmpty = (
   // Add a small safety margin to prevent floating point errors
   const SAFETY_MARGIN = 0.1; // Increased from 0.01 to 1cm for better stability
   
-  // Check if the item is within the container boundaries with safety margin
+  // Check if the item is strictly within the container boundaries
+  // No negative safety margin - boxes must be fully inside the container
   if (
-    position.x < -SAFETY_MARGIN || 
-    position.x + rotation.length > container.length + SAFETY_MARGIN ||
-    position.y < -SAFETY_MARGIN || 
-    position.y + rotation.height > container.height + SAFETY_MARGIN ||
-    position.z < -SAFETY_MARGIN || 
-    position.z + rotation.width > container.width + SAFETY_MARGIN
+    position.x < 0 || 
+    position.x + rotation.length > container.length ||
+    position.y < 0 || 
+    position.y + rotation.height > container.height ||
+    position.z < 0 || 
+    position.z + rotation.width > container.width
   ) {
     return false;
   }
   
-  // Check for collisions with other items
+  // Check for collisions with other items - use stricter collision detection
   for (const packedItem of packedItems) {
     // Get the actual dimensions of the packed item based on its rotation
     const packedItemLength = packedItem.rotation.length;
     const packedItemWidth = packedItem.rotation.width;
     const packedItemHeight = packedItem.rotation.height;
     
-    // Calculate overlap with safety margin
+    // Calculate overlap with NO safety margin for collision detection
+    // This ensures boxes don't overlap at all
     const overlapX = Math.max(0, 
-      Math.min(position.x + rotation.length, packedItem.position.x + packedItemLength + SAFETY_MARGIN) - 
-      Math.max(position.x, packedItem.position.x - SAFETY_MARGIN));
+      Math.min(position.x + rotation.length, packedItem.position.x + packedItemLength) - 
+      Math.max(position.x, packedItem.position.x));
       
     const overlapY = Math.max(0, 
-      Math.min(position.y + rotation.height, packedItem.position.y + packedItemHeight + SAFETY_MARGIN) - 
-      Math.max(position.y, packedItem.position.y - SAFETY_MARGIN));
+      Math.min(position.y + rotation.height, packedItem.position.y + packedItemHeight) - 
+      Math.max(position.y, packedItem.position.y));
       
     const overlapZ = Math.max(0, 
-      Math.min(position.z + rotation.width, packedItem.position.z + packedItemWidth + SAFETY_MARGIN) - 
-      Math.max(position.z, packedItem.position.z - SAFETY_MARGIN));
-      
-    // If there's overlap in all three dimensions, there's a collision
-    if (overlapX > SAFETY_MARGIN && overlapY > SAFETY_MARGIN && overlapZ > SAFETY_MARGIN) {
+      Math.min(position.z + rotation.width, packedItem.position.z + packedItemWidth) - 
+      Math.max(position.z, packedItem.position.z));
+    
+    // If there's ANY overlap in all three dimensions, there's a collision
+    // Using a tiny epsilon value (0.001) to account for floating point precision issues
+    const EPSILON = 0.001;
+    if (overlapX > EPSILON && overlapY > EPSILON && overlapZ > EPSILON) {
       return false;
     }
   }
@@ -217,24 +221,31 @@ const isPositionEmpty = (
 };
 
 // Helper function to generate valid actions with boundary checking
-const generateValidActions = (item: CargoItem, packedItems: PackedItem[], container: Container): { position: Position; rotation: Rotation }[] => {
-  // Limit the number of actions to prevent excessive computation
-  const MAX_ACTIONS = 200;
+const generateValidActions = (item: CargoItem, packedItems: PackedItem[], container: Container, exhaustiveSearch: boolean = false): { position: Position; rotation: Rotation }[] => {
+  // Increase the maximum number of actions to consider more positions
+  const MAX_ACTIONS = exhaustiveSearch ? 500 : 300;
   const validActions = [];
   
-  // Get possible rotations
+  // Get possible rotations - ensure we consider all 6 possible orientations
   const rotations = getPossibleRotations(item);
   
-  // Use a grid approach to reduce the number of positions to check
-  const gridStep = Math.max(1, Math.min(container.length, container.width) / 20);
+  // Use a finer grid for more precise positioning
+  // For exhaustive search, use an even finer grid
+  const gridStep = exhaustiveSearch ? 
+    Math.max(1, Math.min(container.length, container.width) / 40) : 
+    Math.max(1, Math.min(container.length, container.width) / 30);
   
+  // Try each rotation
   for (const rotation of rotations) {
     // Try different positions with grid stepping
+    // Use smaller steps for more precise positioning
     for (let x = 0; x <= container.length - rotation.length; x += gridStep) {
       for (let z = 0; z <= container.width - rotation.width; z += gridStep) {
-        // Find the highest point at this (x,z) coordinate
+        // Find the lowest valid y-coordinate at this (x,z) position
         let y = 0;
+        let foundSupport = false;
         
+        // Check for support from items below
         for (const packedItem of packedItems) {
           // Check if this position overlaps with the packed item on the XZ plane
           const overlapX = Math.max(0, 
@@ -244,29 +255,53 @@ const generateValidActions = (item: CargoItem, packedItems: PackedItem[], contai
           const overlapZ = Math.max(0, 
             Math.min(z + rotation.width, packedItem.position.z + packedItem.rotation.width) - 
             Math.max(z, packedItem.position.z));
-            
+          
+          // Calculate the overlap area as a percentage of the item's base area
+          const overlapArea = overlapX * overlapZ;
+          const itemBaseArea = rotation.length * rotation.width;
+          const overlapRatio = overlapArea / itemBaseArea;
+          
           if (overlapX > 0 && overlapZ > 0) {
             // There is overlap, update y to be on top of this item
-            const itemHeight = packedItem.rotation.height;
-            y = Math.max(y, packedItem.position.y + itemHeight);
+            const newY = packedItem.position.y + packedItem.rotation.height;
+            
+            // If we have significant support (>30% of base area), mark as found support
+            if (overlapRatio > 0.3) {
+              foundSupport = true;
+            }
+            
+            // Update to the highest supporting surface
+            if (newY > y) {
+              y = newY;
+            }
           }
+        }
+        
+        // For items not on the ground, ensure they have some support
+        // Skip positions with insufficient support unless in exhaustive search mode
+        if (y > 0 && !foundSupport && !exhaustiveSearch) {
+          continue;
         }
         
         // Check if this position is valid
         const position = { x, y, z };
         if (isPositionEmpty(position, rotation, packedItems, container)) {
-          // Include all valid positions, even with partial support
+          // Include all valid positions
           validActions.push({ position, rotation });
           
           // Limit the number of actions to prevent excessive computation
           if (validActions.length >= MAX_ACTIONS) {
-            return validActions;
+            // Sort actions by y-coordinate (prefer lower positions)
+            validActions.sort((a, b) => a.position.y - b.position.y);
+            return validActions.slice(0, MAX_ACTIONS);
           }
         }
       }
     }
   }
   
+  // Sort actions by y-coordinate (prefer lower positions)
+  validActions.sort((a, b) => a.position.y - b.position.y);
   return validActions;
 };
 
@@ -752,7 +787,41 @@ const reinforcementLearningPacker = async (
   
   // Initialize state
   const packedItems: PackedItem[] = [];
-  let remainingItems = [...items];
+  
+  // Expand items based on quantity
+  const expandedItems: CargoItem[] = [];
+  items.forEach(item => {
+    for (let i = 0; i < item.quantity; i++) {
+      expandedItems.push({
+        ...item,
+        id: `${item.id}-${i}`,
+        quantity: 1 // Set quantity to 1 for each expanded item
+      });
+    }
+  });
+  
+  console.log(`Expanded ${items.length} items to ${expandedItems.length} items based on quantity`);
+  
+  // Sort items by weight in descending order (heaviest first)
+  // This ensures heavier items are placed at the bottom for better stability
+  const sortedItems = [...expandedItems].sort((a, b) => {
+    // Primary sort: Heaviest items first
+    if (Math.abs(b.weight - a.weight) > 0.01) return b.weight - a.weight;
+    
+    // Secondary sort: Larger volume first (ensures larger boxes are placed first)
+    const volumeA = a.length * a.width * a.height;
+    const volumeB = b.length * b.width * b.height;
+    if (Math.abs(volumeB - volumeA) > 0.01) return volumeB - volumeA;
+    
+    // Tertiary sort: Larger base area first (better stability)
+    const baseAreaA = a.length * a.width;
+    const baseAreaB = b.length * b.width;
+    return baseAreaB - baseAreaA;
+  });
+  
+  console.log('Items sorted by weight (heaviest first) for better stability');
+  
+  let remainingItems = [...sortedItems];
   let totalVolume = 0;
   let totalWeight = 0;
   
@@ -775,12 +844,121 @@ const reinforcementLearningPacker = async (
     const currentItem = remainingItems[0];
     
     // Generate valid positions and rotations
+    // First try with normal constraints
     const validActions = generateValidActions(currentItem, packedItems, container);
     
     if (validActions.length === 0) {
-      // No valid positions found, skip this item
-      remainingItems.shift();
-      continue;
+      // No valid positions found, try with exhaustive search
+      console.warn(`No valid position found for item ${currentItem.id} (${currentItem.name}), trying exhaustive search...`);
+      
+      // Use exhaustive search with finer grid and more positions
+      const exhaustiveActions = generateValidActions(currentItem, packedItems, container, true);
+      
+      if (exhaustiveActions.length > 0) {
+        console.log(`Found ${exhaustiveActions.length} positions with exhaustive search for item ${currentItem.id}`);
+        validActions.push(...exhaustiveActions);
+      } else {
+        // Still no valid positions, try with all possible rotations at all possible positions
+        console.warn(`Still no valid positions found for item ${currentItem.id}, trying all rotations...`);
+        
+        // Try all possible rotations at all possible positions with a very fine grid
+        const allRotations = getPossibleRotations(currentItem);
+        
+        // Try a much finer grid for desperate cases
+        const fineGridStep = Math.max(1, Math.min(container.length, container.width) / 60);
+        
+        // Track if we found any valid position
+        let foundValidPosition = false;
+        
+        // Try each rotation
+        for (const rotation of allRotations) {
+          // Try different positions with very fine grid stepping
+          for (let x = 0; x <= container.length - rotation.length; x += fineGridStep) {
+            for (let z = 0; z <= container.width - rotation.width; z += fineGridStep) {
+              // Try different heights
+              for (let y = 0; y <= container.height - rotation.height; y += 5) {
+                // Check if this position is valid
+                const position = { x, y, z };
+                if (isPositionEmpty(position, rotation, packedItems, container)) {
+                  validActions.push({ position, rotation });
+                  foundValidPosition = true;
+                  
+                  // Limit to prevent excessive computation
+                  if (validActions.length >= 100) {
+                    break;
+                  }
+                }
+              }
+              if (foundValidPosition && validActions.length >= 100) break;
+            }
+            if (foundValidPosition && validActions.length >= 100) break;
+          }
+          if (foundValidPosition && validActions.length >= 100) break;
+        }
+        
+        // If we still couldn't find a position, try placing on top of the highest item
+        if (validActions.length === 0 && packedItems.length > 0) {
+          console.warn(`Still no valid positions found for item ${currentItem.id}, trying to place on top of highest item...`);
+          
+          // Find the item with the highest top surface
+          let highestItem = packedItems[0];
+          
+          for (const packedItem of packedItems) {
+            if (packedItem.position.y + packedItem.rotation.height > 
+                highestItem.position.y + highestItem.rotation.height) {
+              highestItem = packedItem;
+            }
+          }
+          
+          // Try all rotations on top of this item
+          const topPosition = {
+            x: highestItem.position.x,
+            y: highestItem.position.y + highestItem.rotation.height,
+            z: highestItem.position.z
+          };
+          
+          for (const rotation of allRotations) {
+            if (topPosition.y + rotation.height <= container.height &&
+                topPosition.x + rotation.length <= container.length &&
+                topPosition.z + rotation.width <= container.width &&
+                isPositionEmpty(topPosition, rotation, packedItems, container)) {
+              validActions.push({ position: topPosition, rotation });
+              break;
+            }
+          }
+        }
+        
+        // If we still couldn't find a position, try one last approach - find any valid position
+        if (validActions.length === 0) {
+          console.warn(`Last resort for item ${currentItem.id}: trying to find ANY valid position...`);
+          
+          // Try to find ANY valid position in the container
+          for (let y = 0; y <= container.height - currentItem.height; y += 10) {
+            for (let x = 0; x <= container.length - currentItem.length; x += 10) {
+              for (let z = 0; z <= container.width - currentItem.width; z += 10) {
+                const position = { x, y, z };
+                for (const rotation of allRotations) {
+                  if (isPositionEmpty(position, rotation, packedItems, container)) {
+                    validActions.push({ position, rotation });
+                    foundValidPosition = true;
+                    break;
+                  }
+                }
+                if (foundValidPosition) break;
+              }
+              if (foundValidPosition) break;
+            }
+            if (foundValidPosition) break;
+          }
+        }
+        
+        // If we still couldn't find a position, skip this item
+        if (validActions.length === 0) {
+          console.warn(`Item ${currentItem.id} cannot be packed after exhaustive attempts, skipping...`);
+          remainingItems.shift();
+          continue;
+        }
+      }
     }
     
     try {
@@ -977,10 +1155,23 @@ const reinforcementLearningPacker = async (
             const spaceUtilizationScore = calculateSpaceUtilizationScore(position, rotation, packedItems, container);
             const compactnessScore = calculateCompactnessScore(position, rotation, packedItems, container);
             
-            // Calculate a base score with higher emphasis on stability
-            let score = (0.6 * stabilityScore) + (0.25 * spaceUtilizationScore) + (0.15 * compactnessScore);
+            // Calculate height score - prefer lower positions for heavier items
+            // This ensures heavier items are placed at the bottom
+            const heightScore = 1.0 - (position.y / container.height);
             
-            // Bonus for ground positions
+            // Weight the height score by the item's relative weight
+            // Heavier items get stronger preference for lower positions
+            const maxWeight = Math.max(...items.map(item => item.weight));
+            const weightRatio = currentItem.weight / maxWeight;
+            const weightedHeightScore = heightScore * weightRatio * 2.0; // Amplify the effect for heavy items
+            
+            // Calculate a base score with higher emphasis on stability and weighted height
+            let score = (0.4 * stabilityScore) + 
+                       (0.2 * spaceUtilizationScore) + 
+                       (0.15 * compactnessScore) + 
+                       (0.25 * weightedHeightScore); // Significant weight for height score
+            
+            // Additional bonus for ground positions
             if (position.y === 0) score += 0.5;
             
             // Bonus for positions near walls/corners (for stability)

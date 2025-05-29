@@ -11,7 +11,7 @@ import { Container, PackedResult, PackedItem } from '../types';
 import ContainerModel from './three/ContainerModel';
 import PackedItems from './three/PackedItems';
 import ErrorBoundary from './ErrorBoundary';
-import { Box, BarChart3, Weight, PackageCheck, RotateCcw, Maximize, RotateCw } from 'lucide-react';
+import { Box, RotateCcw, Maximize, RotateCw } from 'lucide-react';
 
 interface VisualizationProps {
   container: Container;
@@ -84,13 +84,7 @@ const Visualization: React.FC<VisualizationProps> = ({ container, packedResult, 
     });
   }, [onCanvasReady, packedResult]); // Re-run when packedResult changes to ensure we have the latest render
 
-  // Calculate percentage stats
-  const fillPercentage = packedResult?.containerFillPercentage || 0;
-  const weightPercentage = packedResult?.weightCapacityPercentage || 0;
-  
-  // Calculate unloaded items with safe null checks
-  const unloadedCount = packedResult?.unpackedItems?.length || 0;
-  const totalItems = (packedResult?.packedItems?.length || 0) + unloadedCount;
+
 
   return (
     <div className="card overflow-hidden flex flex-col">
@@ -101,50 +95,7 @@ const Visualization: React.FC<VisualizationProps> = ({ container, packedResult, 
         </h2>
         {packedResult ? (
           <div className="grid grid-cols-3 gap-4 mt-4">
-            <div className="bg-muted rounded-md p-3 text-center">
-              <p className="text-xs text-muted-foreground flex items-center justify-center gap-1">
-                <BarChart3 size={14} />
-                Space Utilization
-              </p>
-              <div className="flex items-center justify-center mt-2">
-                <div className="w-full bg-secondary-200 rounded-full h-2.5">
-                  <div 
-                    className="bg-accent h-2.5 rounded-full" 
-                    style={{ width: `${fillPercentage}%` }}
-                  ></div>
-                </div>
-              </div>
-              <p className="font-medium mt-1.5">{fillPercentage.toFixed(1)}%</p>
-            </div>
-            
-            <div className="bg-muted rounded-md p-3 text-center">
-              <p className="text-xs text-muted-foreground flex items-center justify-center gap-1">
-                <Weight size={14} />
-                Weight Capacity
-              </p>
-              <div className="flex items-center justify-center mt-2">
-                <div className="w-full bg-secondary-200 rounded-full h-2.5">
-                  <div 
-                    className="bg-primary h-2.5 rounded-full" 
-                    style={{ width: `${weightPercentage}%` }}
-                  ></div>
-                </div>
-              </div>
-              <p className="font-medium mt-1.5">{weightPercentage.toFixed(1)}%</p>
-            </div>
-            
-            <div className="bg-muted rounded-md p-3 text-center">
-              <p className="text-xs text-muted-foreground flex items-center justify-center gap-1">
-                <PackageCheck size={14} />
-                Items Loaded
-              </p>
-              <p className="font-medium mt-3.5">
-                {packedResult.packedItems.length} / {totalItems}
-                {unloadedCount > 0 && (
-                  <span className="text-destructive text-xs ml-1">({unloadedCount} unloaded)</span>
-                )}
-              </p>
-            </div>
+
           </div>
         ) : (
           <p className="text-sm text-muted-foreground mt-1">

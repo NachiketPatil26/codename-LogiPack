@@ -11,12 +11,12 @@ const Header: React.FC<HeaderProps> = ({ onOpenDeveloperUI }) => {
       <div className="container mx-auto px-4 py-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="bg-accent/10 p-2 rounded-lg">
-              <Package size={24} className="text-accent" />
+            <div className="bg-accent/10 rounded-lg">
+              <img className="rounded-lg" width={48} height={48} src="/assets/logo.png" alt="Logi-Pack logo" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold">Cargo Container Load Optimizer</h1>
-              <p className="text-xs text-muted-foreground">Maximize space efficiency with 3D bin packing</p>
+              <h1 className="text-lg font-semibold">Logi-Pack</h1>
+              <p className="text-xs text-muted-foreground">Maximize space efficiency</p>
             </div>
           </div>
           
